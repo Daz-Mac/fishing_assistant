@@ -1,392 +1,529 @@
+"""Config flow for Fishing Assistant integration."""
 from __future__ import annotations
+
+import logging
+from typing import Any
+
 import voluptuous as vol
+
 from homeassistant import config_entries
-from homeassistant.core import callback
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 import homeassistant.helpers.config_validation as cv
 
 from .const import (
     DOMAIN,
-    # Ocean mode constants
     CONF_MODE,
     MODE_FRESHWATER,
     MODE_OCEAN,
-    CONF_WEATHER_ENTITY,
-    CONF_MARINE_ENABLED,
-    CONF_TIDE_MODE,
+    CONF_NAME,
+    CONF_LATITUDE,
+    CONF_LONGITUDE,
+    CONF_FISH,
+    CONF_BODY_TYPE,
+    CONF_TIMEZONE,
+    CONF_ELEVATION,
     CONF_HABITAT_PRESET,
     CONF_SPECIES_FOCUS,
+    CONF_WEATHER_ENTITY,
+    CONF_TIDE_MODE,
+    CONF_TIDE_SENSOR,
+    CONF_MARINE_ENABLED,
+    CONF_AUTO_APPLY_THRESHOLDS,
     CONF_THRESHOLDS,
     TIDE_MODE_PROXY,
-    TIDE_MODE_CUSTOM,
+    TIDE_MODE_SENSOR,
     HABITAT_PRESETS,
-    SPECIES_FOCUS,
-    DEFAULT_OCEAN_THRESHOLDS,
 )
-from .helpers.location import resolve_location_metadata_sync
-from .fish_profiles import get_fish_species
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle Fishing Assistant config flow."""
+    """Handle a config flow for Fishing Assistant."""
 
-    VERSION = 1
+    VERSION = 2
 
     def __init__(self):
         """Initialize the config flow."""
-        self.data = {}
+        self.ocean_config = {}
 
-    async def async_step_user(self, user_input=None):
-        """Handle the initial step - choose mode."""
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Handle the initial step - choose mode or use legacy freshwater."""
+        # Check if this is a new setup or legacy
+        if user_input is None:
+            # Show mode selection for new setups
+            return await self.async_step_mode_select()
+        
+        # Legacy freshwater setup (for backwards compatibility)
+        return await self._async_step_freshwater(user_input)
+
+    async def async_step_mode_select(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Select fishing mode."""
         if user_input is not None:
-            mode = user_input.get(CONF_MODE, MODE_FRESHWATER)
-            self.data[CONF_MODE] = mode
-            
-            if mode == MODE_OCEAN:
+            if user_input[CONF_MODE] == MODE_OCEAN:
                 return await self.async_step_ocean_location()
             else:
+                # Go to freshwater setup
                 return await self.async_step_freshwater()
 
         return self.async_show_form(
-            step_id="user",
+            step_id="mode_select",
             data_schema=vol.Schema({
-                vol.Required(CONF_MODE, default=MODE_FRESHWATER): vol.In({
-                    MODE_FRESHWATER: "🎣 Freshwater (Lakes/Rivers/Ponds)",
-                    MODE_OCEAN: "🌊 Ocean/Shore Fishing (Beta)",
-                }),
+                vol.Required(CONF_MODE, default=MODE_FRESHWATER): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {"value": MODE_FRESHWATER, "label": "🎣 Freshwater (Lakes, Rivers, Ponds)"},
+                            {"value": MODE_OCEAN, "label": "🌊 Ocean/Shore Fishing"},
+                        ],
+                        mode="list",
+                    )
+                ),
             }),
-            description_placeholders={
-                "info": (
-                    "Ocean Mode adds tide predictions, wave data, and marine weather scoring. "
-                    "Perfect for coastal and shore fishing!"
-                )
-            },
         )
 
-    async def async_step_freshwater(self, user_input=None):
-        """Handle freshwater mode (original flow)."""
-        errors = {}
-        
+    async def async_step_freshwater(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Handle freshwater fishing setup."""
         if user_input is not None:
-            name = user_input["name"]
-            lat = user_input["latitude"]
-            lon = user_input["longitude"]
-            fish = user_input["fish"]
-            body_type = user_input["body_type"]
-
-            await self.async_set_unique_id(f"{lat:.5f}_{lon:.5f}")
-            self._abort_if_unique_id_configured()
-
-            metadata = await self.hass.async_add_executor_job(
-                resolve_location_metadata_sync, lat, lon
-            )
-
-            return self.async_create_entry(
-                title=name,
-                data={
-                    "mode": MODE_FRESHWATER,
-                    "name": name,
-                    "latitude": lat,
-                    "longitude": lon,
-                    "fish": fish,
-                    "body_type": body_type,
-                    "elevation": metadata.get("elevation"),
-                    "timezone": metadata.get("timezone"),
-                },
-            )
+            return await self._async_step_freshwater(user_input)
 
         return self.async_show_form(
             step_id="freshwater",
             data_schema=vol.Schema({
-                vol.Required("name"): str,
-                vol.Required("latitude"): vol.Coerce(float),
-                vol.Required("longitude"): vol.Coerce(float),
-                vol.Required("fish"): selector.SelectSelector(
+                vol.Required(CONF_NAME): str,
+                vol.Required(CONF_LATITUDE): cv.latitude,
+                vol.Required(CONF_LONGITUDE): cv.longitude,
+                vol.Required(CONF_FISH): selector.SelectSelector(
                     selector.SelectSelectorConfig(
                         options=[
-                            {"value": f, "label": f.replace("_", " ").title()}
-                            for f in sorted(get_fish_species())
+                            "bass",
+                            "pike",
+                            "perch",
+                            "trout",
+                            "carp",
+                            "catfish",
+                            "walleye",
+                            "crappie",
                         ],
                         multiple=True,
-                        mode=selector.SelectSelectorMode.DROPDOWN
+                        mode="dropdown",
                     )
                 ),
-                vol.Required("body_type"): vol.In(["lake", "river", "pond", "reservoir"]),
+                vol.Required(CONF_BODY_TYPE, default="lake"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=["lake", "river", "pond"],
+                        mode="dropdown",
+                    )
+                ),
             }),
-            errors=errors
         )
 
-    # ========================================================================
-    # OCEAN MODE FLOW
-    # ========================================================================
-
-    async def async_step_ocean_location(self, user_input=None):
-        """Configure ocean fishing location."""
+    async def _async_step_freshwater(self, user_input: dict[str, Any]) -> FlowResult:
+        """Process freshwater setup."""
         errors = {}
 
-        if user_input is not None:
-            # Validate coordinates
-            try:
-                lat = float(user_input["latitude"])
-                lon = float(user_input["longitude"])
-                
-                if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
-                    errors["base"] = "invalid_coordinates"
-                else:
-                    self.data.update(user_input)
-                    self.data["latitude"] = lat
-                    self.data["longitude"] = lon
-                    return await self.async_step_ocean_tide()
-                    
-            except ValueError:
+        # Validate coordinates
+        try:
+            lat = float(user_input[CONF_LATITUDE])
+            lon = float(user_input[CONF_LONGITUDE])
+            if not (-90 <= lat <= 90 and -180 <= lon <= 180):
                 errors["base"] = "invalid_coordinates"
+        except (ValueError, KeyError):
+            errors["base"] = "invalid_coordinates"
 
-        # Get HA's home location as default
-        home_lat = self.hass.config.latitude
-        home_lon = self.hass.config.longitude
+        if errors:
+            return self.async_show_form(
+                step_id="freshwater",
+                data_schema=self._get_freshwater_schema(user_input),
+                errors=errors,
+            )
 
-        # Get available weather entities
-        weather_entities = self._get_weather_entities()
-        if not weather_entities:
-            weather_entities = {"none": "No weather entities found"}
+        # Add timezone and elevation (can be enhanced later)
+        user_input[CONF_TIMEZONE] = str(self.hass.config.time_zone)
+        user_input[CONF_ELEVATION] = self.hass.config.elevation
+        user_input[CONF_MODE] = MODE_FRESHWATER
 
-        return self.async_show_form(
-            step_id="ocean_location",
-            data_schema=vol.Schema({
-                vol.Required("name", default="Ocean Fishing Spot"): str,
-                vol.Required("latitude", default=home_lat): vol.Coerce(float),
-                vol.Required("longitude", default=home_lon): vol.Coerce(float),
-                vol.Required(CONF_WEATHER_ENTITY): vol.In(weather_entities),
-            }),
-            errors=errors,
-            description_placeholders={
-                "info": (
-                    "Enter your fishing spot coordinates. "
-                    "Weather entity should be Met.no or similar for best results."
-                )
-            },
+        return self.async_create_entry(
+            title=user_input[CONF_NAME],
+            data=user_input,
         )
 
-    async def async_step_ocean_tide(self, user_input=None):
-        """Configure tide data source."""
+    def _get_freshwater_schema(self, user_input: dict[str, Any] | None = None):
+        """Get freshwater schema with defaults."""
+        return vol.Schema({
+            vol.Required(CONF_NAME, default=user_input.get(CONF_NAME, "")): str,
+            vol.Required(CONF_LATITUDE, default=user_input.get(CONF_LATITUDE, "")): cv.latitude,
+            vol.Required(CONF_LONGITUDE, default=user_input.get(CONF_LONGITUDE, "")): cv.longitude,
+            vol.Required(CONF_FISH, default=user_input.get(CONF_FISH, [])): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[
+                        "bass",
+                        "pike",
+                        "perch",
+                        "trout",
+                        "carp",
+                        "catfish",
+                        "walleye",
+                        "crappie",
+                    ],
+                    multiple=True,
+                    mode="dropdown",
+                )
+            ),
+            vol.Required(CONF_BODY_TYPE, default=user_input.get(CONF_BODY_TYPE, "lake")): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=["lake", "river", "pond"],
+                    mode="dropdown",
+                )
+            ),
+        })
+
+    # ============================================================================
+    # OCEAN MODE FLOW
+    # ============================================================================
+
+    async def async_step_ocean_location(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Configure ocean fishing location."""
         if user_input is not None:
-            self.data.update(user_input)
+            errors = {}
+
+            # Validate coordinates
+            try:
+                lat = float(user_input[CONF_LATITUDE])
+                lon = float(user_input[CONF_LONGITUDE])
+                if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                    errors["base"] = "invalid_coordinates"
+            except (ValueError, KeyError):
+                errors["base"] = "invalid_coordinates"
+
+            if errors:
+                return self.async_show_form(
+                    step_id="ocean_location",
+                    data_schema=self._get_ocean_location_schema(user_input),
+                    errors=errors,
+                )
+
+            self.ocean_config.update(user_input)
             return await self.async_step_ocean_habitat()
 
         return self.async_show_form(
-            step_id="ocean_tide",
-            data_schema=vol.Schema({
-                vol.Required(CONF_TIDE_MODE, default=TIDE_MODE_PROXY): vol.In({
-                    TIDE_MODE_PROXY: "🌙 Automatic Tide Proxy (Recommended)",
-                    TIDE_MODE_CUSTOM: "📊 I have my own tide sensor",
-                }),
-                vol.Optional(CONF_MARINE_ENABLED, default=True): cv.boolean,
-            }),
-            description_placeholders={
-                "info": (
-                    "🌙 Tide Proxy: Uses sun/moon positions to estimate tides worldwide (no API needed).\n"
-                    "📊 Marine Data: Adds wave height/period from Open-Meteo (free, no API key).\n\n"
-                    "Recommended: Enable both for best results!"
-                ),
-            },
+            step_id="ocean_location",
+            data_schema=self._get_ocean_location_schema(),
         )
 
-    async def async_step_ocean_habitat(self, user_input=None):
-        """Configure habitat and species focus."""
+    def _get_ocean_location_schema(self, user_input: dict[str, Any] | None = None):
+        """Get ocean location schema."""
+        return vol.Schema({
+            vol.Required(CONF_NAME, default=user_input.get(CONF_NAME, "") if user_input else ""): str,
+            vol.Required(CONF_LATITUDE, default=user_input.get(CONF_LATITUDE, "") if user_input else ""): cv.latitude,
+            vol.Required(CONF_LONGITUDE, default=user_input.get(CONF_LONGITUDE, "") if user_input else ""): cv.longitude,
+        })
+
+    async def async_step_ocean_habitat(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Configure habitat and species."""
         if user_input is not None:
-            self.data.update(user_input)
-            
-            # Get habitat preset to apply thresholds
-            habitat_key = user_input[CONF_HABITAT_PRESET]
-            habitat = HABITAT_PRESETS[habitat_key]
-            
-            # Merge default thresholds with habitat-specific ones
-            thresholds = DEFAULT_OCEAN_THRESHOLDS.copy()
-            thresholds.update({
-                "max_wind_speed": habitat["max_wind_speed"],
-                "max_gust_speed": habitat["max_gust_speed"],
-                "max_wave_height": habitat["max_wave_height"],
-            })
-            self.data[CONF_THRESHOLDS] = thresholds
-            
-            # Set unique ID
-            lat = self.data["latitude"]
-            lon = self.data["longitude"]
-            await self.async_set_unique_id(f"{lat:.5f}_{lon:.5f}_ocean")
-            self._abort_if_unique_id_configured()
-            
-            # Get location metadata
-            metadata = await self.hass.async_add_executor_job(
-                resolve_location_metadata_sync, lat, lon
-            )
-            self.data["elevation"] = metadata.get("elevation")
-            self.data["timezone"] = metadata.get("timezone")
-            
-            # Create the entry
-            habitat_name = HABITAT_PRESETS[habitat_key]["name"]
-            return self.async_create_entry(
-                title=f"{self.data['name']} ({habitat_name})",
-                data=self.data,
-            )
-
-        # Build habitat options with descriptions
-        habitat_options = [
-            {
-                "value": k,
-                "label": f"{v['name']} - {v['description']}"
-            }
-            for k, v in HABITAT_PRESETS.items()
-        ]
-
-        # Build species options with descriptions
-        species_options = [
-            {
-                "value": k,
-                "label": f"{v['name']} - {v['description']}"
-            }
-            for k, v in SPECIES_FOCUS.items()
-        ]
+            self.ocean_config.update(user_input)
+            return await self.async_step_ocean_weather()
 
         return self.async_show_form(
             step_id="ocean_habitat",
             data_schema=vol.Schema({
-                vol.Required(CONF_HABITAT_PRESET, default=HABITAT_OPEN_BEACH): 
-                    selector.SelectSelector(
-                        selector.SelectSelectorConfig(
-                            options=habitat_options,
-                            mode=selector.SelectSelectorMode.DROPDOWN
-                        )
-                    ),
-                vol.Required(CONF_SPECIES_FOCUS, default=SPECIES_GENERAL): 
-                    selector.SelectSelector(
-                        selector.SelectSelectorConfig(
-                            options=species_options,
-                            mode=selector.SelectSelectorMode.DROPDOWN
-                        )
-                    ),
-            }),
-            description_placeholders={
-                "info": (
-                    "🏖️ Habitat: Affects wave/wind safety thresholds and scoring weights.\n"
-                    "🐟 Species Focus: Adjusts scoring based on target fish behavior and preferences.\n\n"
-                    "You can change these later in integration options."
+                vol.Required(
+                    CONF_HABITAT_PRESET,
+                    default="rocky_point",
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {"value": "sandy_beach", "label": "🏖️ Sandy Beach"},
+                            {"value": "rocky_point", "label": "🪨 Rocky Point/Jetty"},
+                            {"value": "harbour", "label": "⚓ Harbour/Pier"},
+                        ],
+                        mode="list",
+                    )
                 ),
-            },
+                vol.Required(
+                    CONF_SPECIES_FOCUS,
+                    default="general",
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {"value": "surf_predators", "label": "🦈 Surf Predators (Bass, Corbina)"},
+                            {"value": "flatfish", "label": "🐟 Flatfish (Flounder, Sole)"},
+                            {"value": "general", "label": "🎣 General (Mixed Species)"},
+                        ],
+                        mode="list",
+                    )
+                ),
+                vol.Required(CONF_AUTO_APPLY_THRESHOLDS, default=True): selector.BooleanSelector(),
+            }),
         )
 
-    def _get_weather_entities(self):
-        """Get list of weather entities."""
-        weather_entities = {}
-        for state in self.hass.states.async_all("weather"):
-            friendly_name = state.attributes.get("friendly_name", state.entity_id)
-            weather_entities[state.entity_id] = friendly_name
-        return weather_entities
+    async def async_step_ocean_weather(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Configure weather integration."""
+        if user_input is not None:
+            if not user_input.get(CONF_WEATHER_ENTITY):
+                return self.async_show_form(
+                    step_id="ocean_weather",
+                    data_schema=self._get_ocean_weather_schema(user_input),
+                    errors={"base": "no_weather_entity"},
+                )
+
+            self.ocean_config.update(user_input)
+            return await self.async_step_ocean_data_sources()
+
+        return self.async_show_form(
+            step_id="ocean_weather",
+            data_schema=self._get_ocean_weather_schema(),
+        )
+
+    def _get_ocean_weather_schema(self, user_input: dict[str, Any] | None = None):
+        """Get ocean weather schema."""
+        return vol.Schema({
+            vol.Required(
+                CONF_WEATHER_ENTITY,
+                default=user_input.get(CONF_WEATHER_ENTITY, "") if user_input else ""
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="weather")
+            ),
+        })
+
+    async def async_step_ocean_data_sources(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Configure ocean data sources."""
+        if user_input is not None:
+            # Validate tide sensor if selected
+            if user_input.get(CONF_TIDE_MODE) == TIDE_MODE_SENSOR:
+                if not user_input.get(CONF_TIDE_SENSOR):
+                    return self.async_show_form(
+                        step_id="ocean_data_sources",
+                        data_schema=self._get_ocean_data_sources_schema(user_input),
+                        errors={"base": "no_tide_sensor"},
+                    )
+
+            self.ocean_config.update(user_input)
+            return await self.async_step_ocean_thresholds()
+
+        return self.async_show_form(
+            step_id="ocean_data_sources",
+            data_schema=self._get_ocean_data_sources_schema(),
+        )
+
+    def _get_ocean_data_sources_schema(self, user_input: dict[str, Any] | None = None):
+        """Get ocean data sources schema."""
+        return vol.Schema({
+            vol.Required(
+                CONF_TIDE_MODE,
+                default=user_input.get(CONF_TIDE_MODE, TIDE_MODE_PROXY) if user_input else TIDE_MODE_PROXY,
+            ): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[
+                        {"value": TIDE_MODE_PROXY, "label": "🌙 Automatic Tide Proxy (Recommended)"},
+                        {"value": TIDE_MODE_SENSOR, "label": "📊 I have my own tide sensor"},
+                    ],
+                    mode="list",
+                )
+            ),
+            vol.Optional(
+                CONF_TIDE_SENSOR,
+                default=user_input.get(CONF_TIDE_SENSOR, "") if user_input else ""
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor")
+            ),
+            vol.Required(
+                CONF_MARINE_ENABLED,
+                default=user_input.get(CONF_MARINE_ENABLED, True) if user_input else True
+            ): selector.BooleanSelector(),
+        })
+
+    async def async_step_ocean_thresholds(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Configure safety thresholds."""
+        if user_input is not None:
+            # Build final config
+            final_config = {
+                CONF_MODE: MODE_OCEAN,
+                CONF_NAME: self.ocean_config[CONF_NAME],
+                CONF_LATITUDE: self.ocean_config[CONF_LATITUDE],
+                CONF_LONGITUDE: self.ocean_config[CONF_LONGITUDE],
+                CONF_HABITAT_PRESET: self.ocean_config[CONF_HABITAT_PRESET],
+                CONF_SPECIES_FOCUS: self.ocean_config[CONF_SPECIES_FOCUS],
+                CONF_AUTO_APPLY_THRESHOLDS: self.ocean_config[CONF_AUTO_APPLY_THRESHOLDS],
+                CONF_WEATHER_ENTITY: self.ocean_config[CONF_WEATHER_ENTITY],
+                CONF_TIDE_MODE: self.ocean_config[CONF_TIDE_MODE],
+                CONF_MARINE_ENABLED: self.ocean_config[CONF_MARINE_ENABLED],
+                CONF_THRESHOLDS: {
+                    "max_wind_speed": user_input["max_wind_speed"],
+                    "max_gust_speed": user_input["max_gust_speed"],
+                    "max_wave_height": user_input["max_wave_height"],
+                    "min_temperature": user_input["min_temperature"],
+                    "max_temperature": user_input["max_temperature"],
+                },
+            }
+
+            # Add tide sensor if using custom sensor
+            if self.ocean_config[CONF_TIDE_MODE] == TIDE_MODE_SENSOR:
+                final_config[CONF_TIDE_SENSOR] = self.ocean_config.get(CONF_TIDE_SENSOR)
+
+            # Add timezone and elevation
+            final_config[CONF_TIMEZONE] = str(self.hass.config.time_zone)
+            final_config[CONF_ELEVATION] = self.hass.config.elevation
+
+            return self.async_create_entry(
+                title=self.ocean_config[CONF_NAME],
+                data=final_config,
+            )
+
+        # Get defaults from habitat preset
+        habitat = HABITAT_PRESETS.get(
+            self.ocean_config.get(CONF_HABITAT_PRESET, "rocky_point"),
+            HABITAT_PRESETS["rocky_point"]
+        )
+
+        return self.async_show_form(
+            step_id="ocean_thresholds",
+            data_schema=vol.Schema({
+                vol.Required(
+                    "max_wind_speed",
+                    default=habitat.get("max_wind_speed", 25),
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=10,
+                        max=50,
+                        step=5,
+                        unit_of_measurement="km/h",
+                        mode="slider",
+                    )
+                ),
+                vol.Required(
+                    "max_gust_speed",
+                    default=habitat.get("max_gust_speed", 40),
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=15,
+                        max=70,
+                        step=5,
+                        unit_of_measurement="km/h",
+                        mode="slider",
+                    )
+                ),
+                vol.Required(
+                    "max_wave_height",
+                    default=habitat.get("max_wave_height", 2.0),
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0.5,
+                        max=5.0,
+                        step=0.5,
+                        unit_of_measurement="m",
+                        mode="slider",
+                    )
+                ),
+                vol.Required(
+                    "min_temperature",
+                    default=5,
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=-10,
+                        max=20,
+                        step=1,
+                        unit_of_measurement="°C",
+                    )
+                ),
+                vol.Required(
+                    "max_temperature",
+                    default=35,
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=20,
+                        max=50,
+                        step=1,
+                        unit_of_measurement="°C",
+                    )
+                ),
+            }),
+        )
 
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry):
+    def async_get_options_flow(config_entry: config_entries.ConfigEntry) -> config_entries.OptionsFlow:
         """Get the options flow for this handler."""
-        return FishingAssistantOptionsFlow(config_entry)
-
-    @staticmethod
-    @callback
-    def async_get_entry_title(entry: config_entries.ConfigEntry) -> str:
-        """Return the title of the config entry shown in the UI."""
-        return entry.data.get("name", "Fishing Location")
+        return OptionsFlowHandler(config_entry)
 
 
-class FishingAssistantOptionsFlow(config_entries.OptionsFlow):
-    """Handle options for Fishing Assistant."""
+class OptionsFlowHandler(config_entries.OptionsFlow):
+    """Handle options flow for Fishing Assistant."""
 
-    def __init__(self, config_entry):
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         """Initialize options flow."""
         self.config_entry = config_entry
 
-    async def async_step_init(self, user_input=None):
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Manage the options."""
-        mode = self.config_entry.data.get(CONF_MODE, MODE_FRESHWATER)
-        
-        if mode == MODE_OCEAN:
-            return await self.async_step_ocean_options(user_input)
-        else:
-            return await self.async_step_freshwater_options(user_input)
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
 
-    async def async_step_freshwater_options(self, user_input=None):
-        """Handle freshwater options (original)."""
+        mode = self.config_entry.data.get(CONF_MODE, MODE_FRESHWATER)
+
+        if mode == MODE_OCEAN:
+            return await self.async_step_ocean_options()
+        else:
+            return await self.async_step_freshwater_options()
+
+    async def async_step_freshwater_options(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Handle freshwater options."""
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
         return self.async_show_form(
             step_id="freshwater_options",
             data_schema=vol.Schema({
-                vol.Required("fish", default=self.config_entry.data.get("fish", [])): 
-                    selector.SelectSelector(
-                        selector.SelectSelectorConfig(
-                            options=[
-                                {"value": f, "label": f.replace("_", " ").title()}
-                                for f in sorted(get_fish_species())
-                            ],
-                            multiple=True,
-                            mode=selector.SelectSelectorMode.DROPDOWN
-                        )
-                    ),
-                vol.Required("body_type", default=self.config_entry.data.get("body_type", "lake")):
-                    vol.In(["lake", "river", "pond", "reservoir"]),
-            })
+                vol.Required(
+                    CONF_NAME,
+                    default=self.config_entry.data.get(CONF_NAME, "")
+                ): str,
+                vol.Required(
+                    CONF_LATITUDE,
+                    default=self.config_entry.data.get(CONF_LATITUDE, "")
+                ): cv.latitude,
+                vol.Required(
+                    CONF_LONGITUDE,
+                    default=self.config_entry.data.get(CONF_LONGITUDE, "")
+                ): cv.longitude,
+            }),
         )
 
-    async def async_step_ocean_options(self, user_input=None):
-        """Handle ocean mode options."""
+    async def async_step_ocean_options(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Handle ocean options."""
         if user_input is not None:
-            # Update thresholds based on habitat change
-            habitat_key = user_input[CONF_HABITAT_PRESET]
-            habitat = HABITAT_PRESETS[habitat_key]
-            
-            thresholds = self.config_entry.data.get(CONF_THRESHOLDS, DEFAULT_OCEAN_THRESHOLDS).copy()
-            thresholds.update({
-                "max_wind_speed": habitat["max_wind_speed"],
-                "max_gust_speed": habitat["max_gust_speed"],
-                "max_wave_height": habitat["max_wave_height"],
-            })
-            user_input[CONF_THRESHOLDS] = thresholds
-            
             return self.async_create_entry(title="", data=user_input)
 
-        # Build options
-        habitat_options = [
-            {"value": k, "label": v["name"]}
-            for k, v in HABITAT_PRESETS.items()
-        ]
-
-        species_options = [
-            {"value": k, "label": v["name"]}
-            for k, v in SPECIES_FOCUS.items()
-        ]
-
-        current_habitat = self.config_entry.data.get(CONF_HABITAT_PRESET, HABITAT_OPEN_BEACH)
-        current_species = self.config_entry.data.get(CONF_SPECIES_FOCUS, SPECIES_GENERAL)
-        current_marine = self.config_entry.data.get(CONF_MARINE_ENABLED, True)
+        thresholds = self.config_entry.data.get(CONF_THRESHOLDS, {})
 
         return self.async_show_form(
             step_id="ocean_options",
             data_schema=vol.Schema({
-                vol.Required(CONF_HABITAT_PRESET, default=current_habitat): 
-                    selector.SelectSelector(
-                        selector.SelectSelectorConfig(
-                            options=habitat_options,
-                            mode=selector.SelectSelectorMode.DROPDOWN
-                        )
-                    ),
-                vol.Required(CONF_SPECIES_FOCUS, default=current_species): 
-                    selector.SelectSelector(
-                        selector.SelectSelectorConfig(
-                            options=species_options,
-                            mode=selector.SelectSelectorMode.DROPDOWN
-                        )
-                    ),
-                vol.Optional(CONF_MARINE_ENABLED, default=current_marine): cv.boolean,
+                vol.Required(
+                    "max_wind_speed",
+                    default=thresholds.get("max_wind_speed", 25),
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=10,
+                        max=50,
+                        step=5,
+                        unit_of_measurement="km/h",
+                        mode="slider",
+                    )
+                ),
+                vol.Required(
+                    "max_wave_height",
+                    default=thresholds.get("max_wave_height", 2.0),
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0.5,
+                        max=5.0,
+                        step=0.5,
+                        unit_of_measurement="m",
+                        mode="slider",
+                    )
+                ),
             }),
-            description_placeholders={
-                "info": "Update your ocean fishing preferences. Changes take effect immediately."
-            },
         )
