@@ -5,7 +5,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
 from homeassistant.const import UnitOfLength, UnitOfSpeed, PERCENTAGE
-import datetime
+from datetime import datetime, timedelta
 import logging
 
 from .const import (
@@ -34,7 +34,7 @@ async def async_setup_entry(
     """Set up fishing assistant sensors from a config entry."""
     data = config_entry.data
     mode = data.get(CONF_MODE, MODE_FRESHWATER)
-    
+
     if mode == MODE_OCEAN:
         await _setup_ocean_sensors(hass, config_entry, async_add_entities)
     else:
@@ -45,7 +45,7 @@ async def _setup_freshwater_sensors(hass, config_entry, async_add_entities):
     """Set up freshwater fishing sensors (original)."""
     data = config_entry.data
     sensors = []
-    
+
     name = data["name"]
     lat = data["latitude"]
     lon = data["longitude"]
@@ -53,7 +53,7 @@ async def _setup_freshwater_sensors(hass, config_entry, async_add_entities):
     body_type = data["body_type"]
     timezone = data["timezone"]
     elevation = data["elevation"]
-    
+
     for fish in fish_list:
         sensors.append(
             FishScoreSensor(
@@ -67,7 +67,7 @@ async def _setup_freshwater_sensors(hass, config_entry, async_add_entities):
                 config_entry_id=config_entry.entry_id
             )
         )
-    
+
     async_add_entities(sensors)
 
 
@@ -75,21 +75,21 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
     """Set up ocean fishing sensors."""
     data = config_entry.data
     sensors = []
-    
+
     name = data["name"]
     lat = data["latitude"]
     lon = data["longitude"]
-    
+
     # Initialize data fetchers
     tide_proxy = None
     marine_fetcher = None
-    
+
     if data.get(CONF_TIDE_MODE) == TIDE_MODE_PROXY:
         tide_proxy = TideProxy(hass, lat, lon)
-    
+
     if data.get(CONF_MARINE_ENABLED, True):
         marine_fetcher = MarineDataFetcher(hass, lat, lon)
-    
+
     # Create main ocean fishing score sensor
     sensors.append(
         OceanFishingScoreSensor(
@@ -99,7 +99,7 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
             marine_fetcher=marine_fetcher,
         )
     )
-    
+
     # Create tide state sensor
     if tide_proxy:
         sensors.append(
@@ -109,7 +109,6 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
                 tide_proxy=tide_proxy,
             )
         )
-        
         sensors.append(
             TideStrengthSensor(
                 hass=hass,
@@ -117,7 +116,7 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
                 tide_proxy=tide_proxy,
             )
         )
-    
+
     # Create wave sensors
     if marine_fetcher:
         sensors.append(
@@ -127,7 +126,6 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
                 marine_fetcher=marine_fetcher,
             )
         )
-        
         sensors.append(
             WavePeriodSensor(
                 hass=hass,
@@ -135,7 +133,7 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
                 marine_fetcher=marine_fetcher,
             )
         )
-    
+
     async_add_entities(sensors)
 
 
@@ -145,7 +143,7 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
 
 class FishScoreSensor(SensorEntity):
     """Sensor for freshwater fishing score."""
-    
+
     should_poll = True
 
     def __init__(self, name, fish, lat, lon, body_type, timezone, elevation, config_entry_id):
@@ -206,12 +204,12 @@ class FishScoreSensor(SensorEntity):
 
     async def async_update(self):
         """Fetch the 7-day forecast and set today's score as state."""
-        now = datetime.datetime.now()
+        now = datetime.now()
         update_hours = [0, 6, 12, 18]
-        
+
         if self._last_update_hour is not None and now.hour not in update_hours:
             return
-        
+
         if self._last_update_hour == now.hour:
             return
 
@@ -225,8 +223,9 @@ class FishScoreSensor(SensorEntity):
             body_type=self._attrs["body_type"],
         )
 
-        today_str = datetime.date.today().strftime("%Y-%m-%d")
+        today_str = datetime.now().date().strftime("%Y-%m-%d")
         today_data = forecast.get(today_str, {})
+
         self._state = today_data.get("score", 0)
         self._attrs["forecast"] = forecast
         self._last_update_hour = now.hour
@@ -241,7 +240,7 @@ class FishScoreSensor(SensorEntity):
 
 class OceanFishingScoreSensor(SensorEntity):
     """Main ocean fishing score sensor."""
-    
+
     should_poll = True
 
     def __init__(self, hass, config_entry, tide_proxy, marine_fetcher):
@@ -251,18 +250,18 @@ class OceanFishingScoreSensor(SensorEntity):
         self._tide_proxy = tide_proxy
         self._marine_fetcher = marine_fetcher
         self._scorer = OceanFishingScorer(hass, config_entry.data)
-        
+
         data = config_entry.data
         name = data["name"]
         lat = data["latitude"]
         lon = data["longitude"]
-        
+
         self._device_identifier = f"{name}_{lat}_{lon}_ocean"
         self._name = f"{name.lower().replace(' ', '_')}_ocean_fishing_score"
         self._friendly_name = f"{name} Ocean Fishing Score"
         self._state = None
         self._last_update_hour = None
-        
+
         self._attrs = {
             "location": name,
             "latitude": lat,
@@ -315,13 +314,13 @@ class OceanFishingScoreSensor(SensorEntity):
 
     async def async_update(self):
         """Update the fishing score."""
-        now = datetime.datetime.now()
+        now = datetime.now()
         update_hours = [0, 6, 12, 18]
-        
+
         # Only update at specific hours
         if self._last_update_hour is not None and now.hour not in update_hours:
             return
-        
+
         if self._last_update_hour == now.hour:
             return
 
@@ -331,7 +330,7 @@ class OceanFishingScoreSensor(SensorEntity):
             tide_data = await self._tide_proxy.get_tide_data() if self._tide_proxy else {}
             marine_data = await self._marine_fetcher.get_marine_data() if self._marine_fetcher else {}
             astro_data = await self._get_astro_data()
-            
+
             # Calculate score
             result = self._scorer.calculate_score(
                 weather_data=weather_data,
@@ -339,7 +338,7 @@ class OceanFishingScoreSensor(SensorEntity):
                 marine_data=marine_data,
                 astro_data=astro_data,
             )
-            
+
             self._state = result["score"]
             self._attrs.update({
                 "safety": result.get("safety"),
@@ -349,9 +348,9 @@ class OceanFishingScoreSensor(SensorEntity):
                 "breakdown": result.get("breakdown"),
                 "last_updated": now.isoformat(),
             })
-            
+
             self._last_update_hour = now.hour
-            
+
         except Exception as e:
             _LOGGER.error(f"Error updating ocean fishing score: {e}")
             self._state = None
@@ -359,16 +358,14 @@ class OceanFishingScoreSensor(SensorEntity):
     async def _get_weather_data(self):
         """Get weather data from configured weather entity."""
         weather_entity_id = self._config_entry.data.get(CONF_WEATHER_ENTITY)
-        
         if not weather_entity_id:
             return {}
-        
+
         weather_state = self.hass.states.get(weather_entity_id)
         if not weather_state:
             return {}
-        
+
         attrs = weather_state.attributes
-        
         return {
             "temperature": attrs.get("temperature"),
             "wind_speed": attrs.get("wind_speed", 0),
@@ -382,13 +379,13 @@ class OceanFishingScoreSensor(SensorEntity):
         """Get astronomical data from Home Assistant."""
         sun_state = self.hass.states.get("sun.sun")
         moon_state = self.hass.states.get("sensor.moon")
-        
+
         astro = {}
-        
+
         if sun_state:
             astro["sunrise"] = sun_state.attributes.get("next_rising")
             astro["sunset"] = sun_state.attributes.get("next_setting")
-        
+
         if moon_state:
             phase_name = moon_state.state
             phase_map = {
@@ -402,7 +399,7 @@ class OceanFishingScoreSensor(SensorEntity):
                 "waning_crescent": 0.875,
             }
             astro["moon_phase"] = phase_map.get(phase_name, 0.5)
-        
+
         return astro
 
     async def async_added_to_hass(self):
@@ -412,7 +409,7 @@ class OceanFishingScoreSensor(SensorEntity):
 
 class TideStateSensor(SensorEntity):
     """Sensor for tide state (rising/falling/slack)."""
-    
+
     should_poll = True
 
     def __init__(self, hass, config_entry, tide_proxy):
@@ -420,10 +417,10 @@ class TideStateSensor(SensorEntity):
         self.hass = hass
         self._config_entry = config_entry
         self._tide_proxy = tide_proxy
-        
+
         data = config_entry.data
         name = data["name"]
-        
+
         self._device_identifier = f"{name}_{data['latitude']}_{data['longitude']}_ocean"
         self._name = f"{name.lower().replace(' ', '_')}_tide_state"
         self._friendly_name = f"{name} Tide State"
@@ -484,7 +481,7 @@ class TideStateSensor(SensorEntity):
 
 class TideStrengthSensor(SensorEntity):
     """Sensor for tide strength (spring vs neap)."""
-    
+
     should_poll = True
 
     def __init__(self, hass, config_entry, tide_proxy):
@@ -492,10 +489,10 @@ class TideStrengthSensor(SensorEntity):
         self.hass = hass
         self._config_entry = config_entry
         self._tide_proxy = tide_proxy
-        
+
         data = config_entry.data
         name = data["name"]
-        
+
         self._device_identifier = f"{name}_{data['latitude']}_{data['longitude']}_ocean"
         self._name = f"{name.lower().replace(' ', '_')}_tide_strength"
         self._friendly_name = f"{name} Tide Strength"
@@ -545,7 +542,7 @@ class TideStrengthSensor(SensorEntity):
 
 class WaveHeightSensor(SensorEntity):
     """Sensor for wave height."""
-    
+
     should_poll = True
 
     def __init__(self, hass, config_entry, marine_fetcher):
@@ -553,10 +550,10 @@ class WaveHeightSensor(SensorEntity):
         self.hass = hass
         self._config_entry = config_entry
         self._marine_fetcher = marine_fetcher
-        
+
         data = config_entry.data
         name = data["name"]
-        
+
         self._device_identifier = f"{name}_{data['latitude']}_{data['longitude']}_ocean"
         self._name = f"{name.lower().replace(' ', '_')}_wave_height"
         self._friendly_name = f"{name} Wave Height"
@@ -621,7 +618,7 @@ class WaveHeightSensor(SensorEntity):
 
 class WavePeriodSensor(SensorEntity):
     """Sensor for wave period."""
-    
+
     should_poll = True
 
     def __init__(self, hass, config_entry, marine_fetcher):
@@ -629,10 +626,10 @@ class WavePeriodSensor(SensorEntity):
         self.hass = hass
         self._config_entry = config_entry
         self._marine_fetcher = marine_fetcher
-        
+
         data = config_entry.data
         name = data["name"]
-        
+
         self._device_identifier = f"{name}_{data['latitude']}_{data['longitude']}_ocean"
         self._name = f"{name.lower().replace(' ', '_')}_wave_period"
         self._friendly_name = f"{name} Wave Period"
