@@ -1,6 +1,6 @@
 """Ocean fishing scoring algorithm."""
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from homeassistant.util import dt as dt_util
 
 from .const import (
