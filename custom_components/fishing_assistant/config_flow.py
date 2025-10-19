@@ -61,12 +61,17 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_mode_select(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Select fishing mode."""
+        errors = {}
+        
         if user_input is not None:
-            if user_input[CONF_MODE] == MODE_OCEAN:
-                return await self.async_step_ocean_location()
-            else:
-                # Go to freshwater setup
-                return await self.async_step_freshwater()
+            try:
+                if user_input[CONF_MODE] == MODE_OCEAN:
+                    return await self.async_step_ocean_location()
+                else:
+                    return await self.async_step_freshwater()
+            except Exception as err:
+                _LOGGER.error("Error in mode_select: %s", err)
+                errors["base"] = "unknown"
 
         return self.async_show_form(
             step_id="mode_select",
@@ -81,6 +86,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     )
                 ),
             }),
+            errors=errors,
         )
 
     async def async_step_freshwater(self, user_input: dict[str, Any] | None = None) -> FlowResult:
@@ -201,37 +207,18 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 self.ocean_config.update(user_input)
                 return await self.async_step_ocean_habitat()
 
-        # Build schema with suggested values from HA config
-        suggested_values = {
-            CONF_NAME: user_input.get(CONF_NAME, "") if user_input else "",
-            CONF_LATITUDE: user_input.get(CONF_LATITUDE, self.hass.config.latitude) if user_input else self.hass.config.latitude,
-            CONF_LONGITUDE: user_input.get(CONF_LONGITUDE, self.hass.config.longitude) if user_input else self.hass.config.longitude,
-        }
+        # Get defaults - use HA config on first load, user_input on error
+        default_name = user_input.get(CONF_NAME, "") if user_input else ""
+        default_lat = user_input.get(CONF_LATITUDE, self.hass.config.latitude) if user_input else self.hass.config.latitude
+        default_lon = user_input.get(CONF_LONGITUDE, self.hass.config.longitude) if user_input else self.hass.config.longitude
 
         return self.async_show_form(
             step_id="ocean_location",
-            data_schema=self.add_suggested_values_to_schema(
-                vol.Schema({
-                    vol.Required(CONF_NAME): selector.TextSelector(),
-                    vol.Required(CONF_LATITUDE): selector.NumberSelector(
-                        selector.NumberSelectorConfig(
-                            min=-90,
-                            max=90,
-                            step=0.000001,
-                            mode=selector.NumberSelectorMode.BOX,
-                        )
-                    ),
-                    vol.Required(CONF_LONGITUDE): selector.NumberSelector(
-                        selector.NumberSelectorConfig(
-                            min=-180,
-                            max=180,
-                            step=0.000001,
-                            mode=selector.NumberSelectorMode.BOX,
-                        )
-                    ),
-                }),
-                suggested_values,
-            ),
+            data_schema=vol.Schema({
+                vol.Required(CONF_NAME, default=default_name): str,
+                vol.Required(CONF_LATITUDE, default=default_lat): cv.latitude,
+                vol.Required(CONF_LONGITUDE, default=default_lon): cv.longitude,
+            }),
             errors=errors,
         )
 
