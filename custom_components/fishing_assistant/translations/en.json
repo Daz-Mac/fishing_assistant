@@ -12,6 +12,99 @@
           "fish": "Target species",
           "body_type": "Body type"
         }
+      },
+      "mode_select": {
+        "title": "Choose Fishing Mode",
+        "description": "Select the type of fishing you want to track",
+        "data": {
+          "mode": "Fishing Mode"
+        }
+      },
+      "ocean_location": {
+        "title": "Ocean Fishing Location",
+        "description": "Configure your shore or ocean fishing spot",
+        "data": {
+          "name": "Location Name",
+          "latitude": "Latitude",
+          "longitude": "Longitude"
+        }
+      },
+      "ocean_habitat": {
+        "title": "Habitat & Species",
+        "description": "Choose your fishing environment and target species",
+        "data": {
+          "habitat_preset": "Habitat Type",
+          "species_focus": "Species Focus",
+          "auto_apply_thresholds": "Auto-apply habitat thresholds"
+        },
+        "data_description": {
+          "habitat_preset": "The type of coastal environment you'll be fishing",
+          "species_focus": "Target species behavior patterns",
+          "auto_apply_thresholds": "Automatically set safe limits based on habitat"
+        }
+      },
+      "ocean_weather": {
+        "title": "Weather Integration",
+        "description": "Connect your Home Assistant weather entity",
+        "data": {
+          "weather_entity": "Weather Entity"
+        },
+        "data_description": {
+          "weather_entity": "Select your existing weather integration (Met.no, OpenWeatherMap, etc.)"
+        }
+      },
+      "ocean_data_sources": {
+        "title": "Tide & Marine Data",
+        "description": "Configure tide and wave data sources",
+        "data": {
+          "tide_mode": "Tide Data Source",
+          "tide_sensor": "Tide Sensor Entity",
+          "marine_enabled": "Enable Wave & Marine Data"
+        },
+        "data_description": {
+          "tide_mode": "Choose automatic calculation or use your own tide sensor",
+          "tide_sensor": "Select your tide sensor entity (only if using own sensor)",
+          "marine_enabled": "Get wave height, period, and swell data from Open-Meteo (free)"
+        }
+      },
+      "ocean_thresholds": {
+        "title": "Safety Thresholds",
+        "description": "Set maximum safe conditions for fishing",
+        "data": {
+          "max_wind_speed": "Maximum Wind Speed (km/h)",
+          "max_gust_speed": "Maximum Gust Speed (km/h)",
+          "max_wave_height": "Maximum Wave Height (m)",
+          "min_temperature": "Minimum Temperature (°C)",
+          "max_temperature": "Maximum Temperature (°C)"
+        },
+        "data_description": {
+          "max_wind_speed": "Fishing score will be 0 above this wind speed",
+          "max_gust_speed": "Fishing score will be 0 above this gust speed",
+          "max_wave_height": "Fishing score will be 0 above this wave height",
+          "min_temperature": "Minimum comfortable temperature",
+          "max_temperature": "Maximum comfortable temperature"
+        }
+      }
+    },
+    "error": {
+      "invalid_coordinates": "Invalid coordinates. Latitude must be between -90 and 90, longitude between -180 and 180.",
+      "no_weather_entity": "Please select a weather entity",
+      "no_tide_sensor": "Please select a tide sensor when using own sensor mode"
+    },
+    "abort": {
+      "already_configured": "This location is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Update Fishing Assistant",
+        "description": "Modify your fishing location settings",
+        "data": {
+          "name": "Location name",
+          "latitude": "Latitude",
+          "longitude": "Longitude"
+        }
       }
     }
   }
