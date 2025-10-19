@@ -185,9 +185,9 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_ocean_location(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Configure ocean fishing location."""
+        errors = {}
+        
         if user_input is not None:
-            errors = {}
-
             # Validate coordinates
             try:
                 lat = float(user_input[CONF_LATITUDE])
@@ -197,28 +197,43 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except (ValueError, KeyError):
                 errors["base"] = "invalid_coordinates"
 
-            if errors:
-                return self.async_show_form(
-                    step_id="ocean_location",
-                    data_schema=self._get_ocean_location_schema(user_input),
-                    errors=errors,
-                )
+            if not errors:
+                self.ocean_config.update(user_input)
+                return await self.async_step_ocean_habitat()
 
-            self.ocean_config.update(user_input)
-            return await self.async_step_ocean_habitat()
+        # Build schema with suggested values from HA config
+        suggested_values = {
+            CONF_NAME: user_input.get(CONF_NAME, "") if user_input else "",
+            CONF_LATITUDE: user_input.get(CONF_LATITUDE, self.hass.config.latitude) if user_input else self.hass.config.latitude,
+            CONF_LONGITUDE: user_input.get(CONF_LONGITUDE, self.hass.config.longitude) if user_input else self.hass.config.longitude,
+        }
 
         return self.async_show_form(
             step_id="ocean_location",
-            data_schema=self._get_ocean_location_schema(),
+            data_schema=self.add_suggested_values_to_schema(
+                vol.Schema({
+                    vol.Required(CONF_NAME): selector.TextSelector(),
+                    vol.Required(CONF_LATITUDE): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=-90,
+                            max=90,
+                            step=0.000001,
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Required(CONF_LONGITUDE): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=-180,
+                            max=180,
+                            step=0.000001,
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                }),
+                suggested_values,
+            ),
+            errors=errors,
         )
-
-    def _get_ocean_location_schema(self, user_input: dict[str, Any] | None = None):
-        """Get ocean location schema."""
-        return vol.Schema({
-            vol.Required(CONF_NAME, default=user_input.get(CONF_NAME, "") if user_input else ""): str,
-            vol.Required(CONF_LATITUDE, default=user_input.get(CONF_LATITUDE, "") if user_input else ""): cv.latitude,
-            vol.Required(CONF_LONGITUDE, default=user_input.get(CONF_LONGITUDE, "") if user_input else ""): cv.longitude,
-        })
 
     async def async_step_ocean_habitat(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Configure habitat and species."""
