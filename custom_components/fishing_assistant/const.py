@@ -15,6 +15,16 @@ CONF_HABITAT_PRESET = "habitat_preset"
 CONF_SPECIES_FOCUS = "species_focus"
 CONF_THRESHOLDS = "thresholds"
 
+CONF_NAME = "name"
+CONF_LATITUDE = "latitude"
+CONF_LONGITUDE = "longitude"
+CONF_FISH = "fish"
+CONF_BODY_TYPE = "body_type"
+CONF_TIMEZONE = "timezone"
+CONF_ELEVATION = "elevation"
+CONF_TIDE_SENSOR = "tide_sensor"
+CONF_AUTO_APPLY_THRESHOLDS = "auto_apply_thresholds"
+
 # Mode options
 MODE_FRESHWATER = "freshwater"
 MODE_OCEAN = "ocean"
@@ -25,6 +35,7 @@ TIDE_MODE_CUSTOM = "custom"
 TIDE_MODE_UKHO = "ukho_api"
 TIDE_MODE_NOAA = "noaa_api"
 TIDE_MODE_WORLDTIDES = "worldtides_api"
+TIDE_MODE_SENSOR = "sensor"
 
 # Habitat presets for ocean fishing
 HABITAT_OPEN_BEACH = "open_beach"
