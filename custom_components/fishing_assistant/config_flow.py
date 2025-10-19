@@ -280,7 +280,11 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if not user_input.get(CONF_WEATHER_ENTITY):
                 return self.async_show_form(
                     step_id="ocean_weather",
-                    data_schema=self._get_ocean_weather_schema(user_input),
+                    data_schema=vol.Schema({
+                        vol.Required(CONF_WEATHER_ENTITY): selector.EntitySelector(
+                            selector.EntitySelectorConfig(domain="weather")
+                        ),
+                    }),
                     errors={"base": "no_weather_entity"},
                 )
 
@@ -289,46 +293,35 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="ocean_weather",
-            data_schema=self._get_ocean_weather_schema(),
+            data_schema=vol.Schema({
+                vol.Required(CONF_WEATHER_ENTITY): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="weather")
+                ),
+            }),
         )
-
-    def _get_ocean_weather_schema(self, user_input: dict[str, Any] | None = None):
-        """Get ocean weather schema."""
-        return vol.Schema({
-            vol.Required(
-                CONF_WEATHER_ENTITY,
-                default=user_input.get(CONF_WEATHER_ENTITY, "") if user_input else ""
-            ): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="weather")
-            ),
-        })
 
     async def async_step_ocean_data_sources(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Configure ocean data sources."""
+        errors = {}
+        
         if user_input is not None:
             # Validate tide sensor if selected
             if user_input.get(CONF_TIDE_MODE) == TIDE_MODE_SENSOR:
                 if not user_input.get(CONF_TIDE_SENSOR):
-                    return self.async_show_form(
-                        step_id="ocean_data_sources",
-                        data_schema=self._get_ocean_data_sources_schema(user_input),
-                        errors={"base": "no_tide_sensor"},
-                    )
+                    errors["base"] = "no_tide_sensor"
+            
+            if not errors:
+                self.ocean_config.update(user_input)
+                return await self.async_step_ocean_thresholds()
 
-            self.ocean_config.update(user_input)
-            return await self.async_step_ocean_thresholds()
-
-        return self.async_show_form(
-            step_id="ocean_data_sources",
-            data_schema=self._get_ocean_data_sources_schema(),
-        )
-
-    def _get_ocean_data_sources_schema(self, user_input: dict[str, Any] | None = None):
-        """Get ocean data sources schema."""
-        return vol.Schema({
+        # Get current tide mode to determine if we show sensor selector
+        tide_mode = user_input.get(CONF_TIDE_MODE, TIDE_MODE_PROXY) if user_input else TIDE_MODE_PROXY
+        
+        # Build schema dynamically
+        schema_dict = {
             vol.Required(
                 CONF_TIDE_MODE,
-                default=user_input.get(CONF_TIDE_MODE, TIDE_MODE_PROXY) if user_input else TIDE_MODE_PROXY,
+                default=tide_mode,
             ): selector.SelectSelector(
                 selector.SelectSelectorConfig(
                     options=[
@@ -338,17 +331,25 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     mode="list",
                 )
             ),
-            vol.Optional(
-                CONF_TIDE_SENSOR,
-                default=user_input.get(CONF_TIDE_SENSOR, "") if user_input else ""
-            ): selector.EntitySelector(
+        }
+        
+        # Only show tide sensor selector if user chose custom sensor mode
+        if tide_mode == TIDE_MODE_SENSOR:
+            schema_dict[vol.Required(CONF_TIDE_SENSOR)] = selector.EntitySelector(
                 selector.EntitySelectorConfig(domain="sensor")
-            ),
-            vol.Required(
-                CONF_MARINE_ENABLED,
-                default=user_input.get(CONF_MARINE_ENABLED, True) if user_input else True
-            ): selector.BooleanSelector(),
-        })
+            )
+        
+        # Add marine data toggle
+        schema_dict[vol.Required(
+            CONF_MARINE_ENABLED,
+            default=user_input.get(CONF_MARINE_ENABLED, True) if user_input else True
+        )] = selector.BooleanSelector()
+
+        return self.async_show_form(
+            step_id="ocean_data_sources",
+            data_schema=vol.Schema(schema_dict),
+            errors=errors,
+        )
 
     async def async_step_ocean_thresholds(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Configure safety thresholds."""
