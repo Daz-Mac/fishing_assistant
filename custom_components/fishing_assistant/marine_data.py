@@ -23,10 +23,10 @@ class MarineDataFetcher:
     async def get_marine_data(self):
         """Fetch current and forecast marine data."""
         now = dt_util.now()
-        
+
         # Cache for 1 hour
-        if (self._last_fetch and self._cache and 
-            (now - self._last_fetch).total_seconds() < 3600):
+        if (self._last_fetch and self._cache and
+                (now - self._last_fetch).total_seconds() < 3600):
             return self._cache
 
         try:
@@ -62,7 +62,7 @@ class MarineDataFetcher:
             async with session.get(OPEN_METEO_MARINE_URL, params=params) as response:
                 if response.status != 200:
                     raise Exception(f"API returned status {response.status}")
-                
+
                 data = await response.json()
                 return self._parse_marine_data(data)
 
@@ -70,14 +70,22 @@ class MarineDataFetcher:
         """Parse the API response into usable format."""
         hourly = raw_data.get("hourly", {})
         times = hourly.get("time", [])
-        
+
         if not times:
             return self._get_fallback_data()
 
-        # Convert times to datetime objects
-        parsed_times = [datetime.fromisoformat(t) for t in times]
-        now = dt_util.now()
+        # Convert times to timezone-aware datetime objects using dt_util
+        parsed_times = []
+        for t in times:
+            parsed_time = dt_util.parse_datetime(t)
+            if parsed_time:
+                parsed_times.append(parsed_time)
         
+        if not parsed_times:
+            return self._get_fallback_data()
+        
+        now = dt_util.now()
+
         # Find current hour index
         current_index = 0
         for i, t in enumerate(parsed_times):
@@ -111,10 +119,10 @@ class MarineDataFetcher:
     def _build_daily_forecast(self, hourly, times):
         """Build daily forecast from hourly data."""
         forecast = {}
-        
+
         for i, time in enumerate(times):
             date_key = time.date().isoformat()
-            
+
             if date_key not in forecast:
                 forecast[date_key] = {
                     "wave_heights": [],
@@ -122,7 +130,7 @@ class MarineDataFetcher:
                     "wind_wave_heights": [],
                     "swell_wave_heights": [],
                 }
-            
+
             # Collect hourly values for daily aggregation
             if hourly.get("wave_height", [None])[i] is not None:
                 forecast[date_key]["wave_heights"].append(hourly["wave_height"][i])
@@ -180,14 +188,13 @@ class MarineDataFetcher:
     def get_wave_condition_score(self, max_wave_height=2.0):
         """
         Score wave conditions (0-100).
-        
         Returns higher scores for moderate waves, lower for calm or rough.
         """
         wave_height = self.get_current_wave_height()
-        
+
         if wave_height is None:
             return 50  # Neutral score when data unavailable
-        
+
         if wave_height > max_wave_height:
             # Too rough - dangerous
             return 0
@@ -208,8 +215,6 @@ class MarineDataFetcher:
     def is_safe_conditions(self, max_wave_height=2.0):
         """Check if current wave conditions are safe."""
         wave_height = self.get_current_wave_height()
-        
         if wave_height is None:
             return True  # Assume safe if no data
-        
         return wave_height <= max_wave_height
