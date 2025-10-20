@@ -24,6 +24,8 @@ CONF_TIMEZONE = "timezone"
 CONF_ELEVATION = "elevation"
 CONF_TIDE_SENSOR = "tide_sensor"
 CONF_AUTO_APPLY_THRESHOLDS = "auto_apply_thresholds"
+CONF_SPECIES_ID = "species_id"
+CONF_SPECIES_REGION = "species_region"
 
 # Mode options
 MODE_FRESHWATER = "freshwater"
