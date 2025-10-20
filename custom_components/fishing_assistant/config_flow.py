@@ -231,6 +231,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # Initialize species loader if not already done
         if self.species_loader is None:
             self.species_loader = SpeciesLoader(self.hass)
+            await self.species_loader.async_load_profiles()
 
         if user_input is not None:
             self.ocean_config.update(user_input)
