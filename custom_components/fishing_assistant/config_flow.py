@@ -405,6 +405,9 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if user_input.get(CONF_TIDE_MODE) == TIDE_MODE_SENSOR:
                 if not user_input.get(CONF_TIDE_SENSOR):
                     errors["base"] = "no_tide_sensor"
+            else:
+                # Remove tide sensor from config if switching back to proxy mode
+                user_input.pop(CONF_TIDE_SENSOR, None)
 
             if not errors:
                 self.ocean_config.update(user_input)
@@ -431,7 +434,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         # Only show tide sensor selector if user chose custom sensor mode
         if tide_mode == TIDE_MODE_SENSOR:
-            schema_dict[vol.Required(CONF_TIDE_SENSOR)] = selector.EntitySelector(
+            schema_dict[vol.Optional(CONF_TIDE_SENSOR)] = selector.EntitySelector(
                 selector.EntitySelectorConfig(domain="sensor")
             )
 
