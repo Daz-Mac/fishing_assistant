@@ -26,6 +26,8 @@ from .const import (
     CONF_ELEVATION,
     CONF_HABITAT_PRESET,
     CONF_SPECIES_FOCUS,
+    CONF_SPECIES_ID,
+    CONF_SPECIES_REGION,
     CONF_WEATHER_ENTITY,
     CONF_TIDE_MODE,
     CONF_TIDE_SENSOR,
@@ -36,6 +38,7 @@ from .const import (
     TIDE_MODE_SENSOR,
     HABITAT_PRESETS,
 )
+from .species_loader import SpeciesLoader
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -48,6 +51,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def __init__(self):
         """Initialize the config flow."""
         self.ocean_config = {}
+        self.species_loader = None
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Handle the initial step - choose mode or use legacy freshwater."""
@@ -205,7 +209,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             if not errors:
                 self.ocean_config.update(user_input)
-                return await self.async_step_ocean_habitat()
+                return await self.async_step_ocean_species()
 
         # Get defaults - use HA config on first load, user_input on error
         default_name = user_input.get(CONF_NAME, "") if user_input else ""
@@ -222,8 +226,87 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+    async def async_step_ocean_species(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Configure species selection."""
+        # Initialize species loader if not already done
+        if self.species_loader is None:
+            self.species_loader = SpeciesLoader(self.hass)
+
+        if user_input is not None:
+            self.ocean_config.update(user_input)
+            return await self.async_step_ocean_species_detail()
+
+        # Get available regions
+        regions = self.species_loader.get_regions()
+        region_options = [
+            {"value": region["id"], "label": f"{region['name']} - {region['description']}"}
+            for region in regions
+        ]
+
+        return self.async_show_form(
+            step_id="ocean_species",
+            data_schema=vol.Schema({
+                vol.Required(
+                    CONF_SPECIES_REGION,
+                    default="gibraltar",
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=region_options,
+                        mode="dropdown",
+                    )
+                ),
+            }),
+        )
+
+    async def async_step_ocean_species_detail(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Select specific species from chosen region."""
+        if user_input is not None:
+            self.ocean_config.update(user_input)
+            return await self.async_step_ocean_habitat()
+
+        # Get species for selected region
+        region = self.ocean_config.get(CONF_SPECIES_REGION, "global")
+        species_list = self.species_loader.get_species_by_region(region)
+
+        # Build species options
+        species_options = []
+        for species in species_list:
+            emoji = species.get("emoji", "🐟")
+            name = species.get("name", species["id"])
+            species_id = species["id"]
+            
+            # Add active months info
+            active_months = species.get("active_months", [])
+            if len(active_months) == 12:
+                season_info = "Year-round"
+            elif len(active_months) > 0:
+                season_info = f"Active: {len(active_months)} months"
+            else:
+                season_info = ""
+            
+            label = f"{emoji} {name}"
+            if season_info:
+                label += f" ({season_info})"
+            
+            species_options.append({"value": species_id, "label": label})
+
+        return self.async_show_form(
+            step_id="ocean_species_detail",
+            data_schema=vol.Schema({
+                vol.Required(
+                    CONF_SPECIES_ID,
+                    default="general_mixed",
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=species_options,
+                        mode="dropdown",
+                    )
+                ),
+            }),
+        )
+
     async def async_step_ocean_habitat(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        """Configure habitat and species."""
+        """Configure habitat."""
         if user_input is not None:
             self.ocean_config.update(user_input)
             return await self.async_step_ocean_weather()
@@ -237,22 +320,10 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ): selector.SelectSelector(
                     selector.SelectSelectorConfig(
                         options=[
-                            {"value": "sandy_beach", "label": "🏖️ Sandy Beach"},
+                            {"value": "open_beach", "label": "🏖️ Open Sandy Beach"},
                             {"value": "rocky_point", "label": "🪨 Rocky Point/Jetty"},
                             {"value": "harbour", "label": "⚓ Harbour/Pier"},
-                        ],
-                        mode="list",
-                    )
-                ),
-                vol.Required(
-                    CONF_SPECIES_FOCUS,
-                    default="general",
-                ): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=[
-                            {"value": "surf_predators", "label": "🦈 Surf Predators (Bass, Corbina)"},
-                            {"value": "flatfish", "label": "🐟 Flatfish (Flounder, Sole)"},
-                            {"value": "general", "label": "🎣 General (Mixed Species)"},
+                            {"value": "reef", "label": "🪸 Offshore Reef"},
                         ],
                         mode="list",
                     )
@@ -347,8 +418,9 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_NAME: self.ocean_config[CONF_NAME],
                 CONF_LATITUDE: self.ocean_config[CONF_LATITUDE],
                 CONF_LONGITUDE: self.ocean_config[CONF_LONGITUDE],
+                CONF_SPECIES_ID: self.ocean_config.get(CONF_SPECIES_ID, "general_mixed"),
+                CONF_SPECIES_REGION: self.ocean_config.get(CONF_SPECIES_REGION, "global"),
                 CONF_HABITAT_PRESET: self.ocean_config[CONF_HABITAT_PRESET],
-                CONF_SPECIES_FOCUS: self.ocean_config[CONF_SPECIES_FOCUS],
                 CONF_AUTO_APPLY_THRESHOLDS: self.ocean_config[CONF_AUTO_APPLY_THRESHOLDS],
                 CONF_WEATHER_ENTITY: self.ocean_config[CONF_WEATHER_ENTITY],
                 CONF_TIDE_MODE: self.ocean_config[CONF_TIDE_MODE],
