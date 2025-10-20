@@ -285,7 +285,7 @@ class OceanFishingScoreSensor(SensorEntity):
             "longitude": lon,
             "mode": "ocean",
             "habitat": data.get("habitat_preset"),
-            "species_focus": data.get("species_focus"),
+            "species_focus": "Unknown",  # Will be updated after scorer initializes
         }
 
     @property
@@ -429,6 +429,11 @@ class OceanFishingScoreSensor(SensorEntity):
         """When entity is added to hass."""
         # Initialize the scorer asynchronously
         await self._scorer.async_initialize()
+        
+        # Update species_focus with the actual loaded species name
+        if self._scorer.species_profile:
+            self._attrs["species_focus"] = self._scorer.species_profile.get("name", "Unknown")
+        
         await self.async_update()
 
 
