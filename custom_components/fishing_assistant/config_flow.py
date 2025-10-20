@@ -366,7 +366,6 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         mode="list",
                     )
                 ),
-                vol.Required(CONF_AUTO_APPLY_THRESHOLDS, default=True): selector.BooleanSelector(),
             }),
         )
 
@@ -385,7 +384,6 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
 
             self.ocean_config.update(user_input)
-            # Skip the data sources step and go directly to thresholds
             # Set defaults for tide and marine data
             self.ocean_config[CONF_TIDE_MODE] = TIDE_MODE_PROXY
             self.ocean_config[CONF_MARINE_ENABLED] = True
@@ -412,7 +410,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_SPECIES_ID: self.ocean_config.get(CONF_SPECIES_ID, "general_mixed"),
                 CONF_SPECIES_REGION: self.ocean_config.get(CONF_SPECIES_REGION, "global"),
                 CONF_HABITAT_PRESET: self.ocean_config[CONF_HABITAT_PRESET],
-                CONF_AUTO_APPLY_THRESHOLDS: self.ocean_config[CONF_AUTO_APPLY_THRESHOLDS],
+                CONF_AUTO_APPLY_THRESHOLDS: False,  # Always show thresholds
                 CONF_WEATHER_ENTITY: self.ocean_config[CONF_WEATHER_ENTITY],
                 CONF_TIDE_MODE: TIDE_MODE_PROXY,  # Always use proxy
                 CONF_MARINE_ENABLED: True,  # Always enabled
@@ -502,6 +500,9 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     )
                 ),
             }),
+            description_placeholders={
+                "info": "Set safe fishing limits based on your habitat and comfort level."
+            }
         )
 
     @staticmethod
