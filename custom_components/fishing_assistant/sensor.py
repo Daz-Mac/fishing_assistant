@@ -5,6 +5,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
 from homeassistant.const import UnitOfLength, UnitOfSpeed, PERCENTAGE
+from homeassistant.util import dt as dt_util
 from datetime import datetime, timedelta
 import logging
 
@@ -383,8 +384,14 @@ class OceanFishingScoreSensor(SensorEntity):
         astro = {}
 
         if sun_state:
-            astro["sunrise"] = sun_state.attributes.get("next_rising")
-            astro["sunset"] = sun_state.attributes.get("next_setting")
+            # Parse string timestamps to datetime objects
+            sunrise_str = sun_state.attributes.get("next_rising")
+            sunset_str = sun_state.attributes.get("next_setting")
+            
+            if sunrise_str:
+                astro["sunrise"] = dt_util.parse_datetime(sunrise_str)
+            if sunset_str:
+                astro["sunset"] = dt_util.parse_datetime(sunset_str)
 
         if moon_state:
             phase_name = moon_state.state
