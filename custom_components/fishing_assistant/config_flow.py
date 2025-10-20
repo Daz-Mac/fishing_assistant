@@ -1,17 +1,13 @@
 """Config flow for Fishing Assistant integration."""
 from __future__ import annotations
-
 import logging
 from typing import Any
-
 import voluptuous as vol
-
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 import homeassistant.helpers.config_validation as cv
-
 from .const import (
     DOMAIN,
     CONF_MODE,
@@ -59,14 +55,14 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is None:
             # Show mode selection for new setups
             return await self.async_step_mode_select()
-        
+
         # Legacy freshwater setup (for backwards compatibility)
         return await self._async_step_freshwater(user_input)
 
     async def async_step_mode_select(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Select fishing mode."""
         errors = {}
-        
+
         if user_input is not None:
             try:
                 if user_input[CONF_MODE] == MODE_OCEAN:
@@ -196,7 +192,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_ocean_location(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Configure ocean fishing location."""
         errors = {}
-        
+
         if user_input is not None:
             # Validate coordinates
             try:
@@ -246,7 +242,9 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 # Find which region this species belongs to
                 species_profile = self.species_loader.get_species(species_id)
                 if species_profile:
-                    species_region = species_profile.get("region", "global")
+                    # Use the first region in the list as primary
+                    available_regions = species_profile.get("regions", ["global"])
+                    species_region = available_regions[0]
                 else:
                     species_region = "global"
             
@@ -259,43 +257,73 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         regions = self.species_loader.get_regions()
         species_options = []
         
+        # === SECTION 1: GENERAL REGION PROFILES ===
+        species_options.append({
+            "value": "separator_regions",
+            "label": "━━━━━ 🎣 GENERAL REGION PROFILES ━━━━━"
+        })
+        
         for region in regions:
             region_id = region["id"]
             region_name = region["name"]
             
-            # Add a "General Mixed" option for each region first
+            # Add a "General Mixed" option for each region
             species_options.append({
                 "value": f"general_mixed_{region_id}",
                 "label": f"🎣 {region_name} - General Mixed Species"
             })
+        
+        # === SECTION 2: SPECIFIC SPECIES ===
+        species_options.append({
+            "value": "separator_species",
+            "label": "━━━━━ 🐟 TARGET SPECIFIC SPECIES ━━━━━"
+        })
+        
+        # Group species by region for better organization
+        for region in regions:
+            region_id = region["id"]
+            region_name = region["name"]
+            
+            # Skip global region for species listing (it only has general profiles)
+            if region_id == "global":
+                continue
             
             # Get all species for this region
             species_list = self.species_loader.get_species_by_region(region_id)
             
-            # Add individual species
-            for species in species_list:
-                # Skip if it's already a general_mixed profile
-                if species["id"].startswith("general_mixed"):
-                    continue
+            # Filter out general profiles
+            species_list = [s for s in species_list 
+                          if not s["id"].startswith("general_mixed") 
+                          and not s["id"].startswith("surf_predators") 
+                          and not s["id"].startswith("flatfish")]
+            
+            if species_list:
+                # Add region header
+                species_options.append({
+                    "value": f"header_{region_id}",
+                    "label": f"  ▸ {region_name}"
+                })
+                
+                # Add individual species
+                for species in species_list:
+                    emoji = species.get("emoji", "🐟")
+                    name = species.get("name", species["id"])
+                    species_id = species["id"]
                     
-                emoji = species.get("emoji", "🐟")
-                name = species.get("name", species["id"])
-                species_id = species["id"]
-                
-                # Add active months info
-                active_months = species.get("active_months", [])
-                if len(active_months) == 12:
-                    season_info = "Year-round"
-                elif len(active_months) > 0:
-                    season_info = f"Active: {len(active_months)} months"
-                else:
-                    season_info = ""
-                
-                label = f"  {emoji} {name}"
-                if season_info:
-                    label += f" ({season_info})"
-                
-                species_options.append({"value": species_id, "label": label})
+                    # Add active months info
+                    active_months = species.get("active_months", [])
+                    if len(active_months) == 12:
+                        season_info = "Year-round"
+                    elif len(active_months) > 0:
+                        season_info = f"Active: {len(active_months)} months"
+                    else:
+                        season_info = ""
+                    
+                    label = f"    {emoji} {name}"
+                    if season_info:
+                        label += f" ({season_info})"
+                    
+                    species_options.append({"value": species_id, "label": label})
 
         return self.async_show_form(
             step_id="ocean_species",
@@ -311,7 +339,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ),
             }),
             description_placeholders={
-                "info": "Select a specific species to target, or choose a general mixed species profile for your region."
+                "info": "Choose a general region profile for mixed species, or target a specific species."
             }
         )
 
@@ -371,20 +399,20 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_ocean_data_sources(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Configure ocean data sources."""
         errors = {}
-        
+
         if user_input is not None:
             # Validate tide sensor if selected
             if user_input.get(CONF_TIDE_MODE) == TIDE_MODE_SENSOR:
                 if not user_input.get(CONF_TIDE_SENSOR):
                     errors["base"] = "no_tide_sensor"
-            
+
             if not errors:
                 self.ocean_config.update(user_input)
                 return await self.async_step_ocean_thresholds()
 
         # Get current tide mode to determine if we show sensor selector
         tide_mode = user_input.get(CONF_TIDE_MODE, TIDE_MODE_PROXY) if user_input else TIDE_MODE_PROXY
-        
+
         # Build schema dynamically
         schema_dict = {
             vol.Required(
@@ -400,13 +428,13 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
             ),
         }
-        
+
         # Only show tide sensor selector if user chose custom sensor mode
         if tide_mode == TIDE_MODE_SENSOR:
             schema_dict[vol.Required(CONF_TIDE_SENSOR)] = selector.EntitySelector(
                 selector.EntitySelectorConfig(domain="sensor")
             )
-        
+
         # Add marine data toggle
         schema_dict[vol.Required(
             CONF_MARINE_ENABLED,
