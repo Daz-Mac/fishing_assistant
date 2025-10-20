@@ -136,7 +136,7 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
             )
         )
 
-    # Create wind sensors (NEW)
+    # Create wind sensors
     if weather_entity:
         sensors.append(
             WindSpeedSensor(
@@ -348,7 +348,7 @@ class OceanFishingScoreSensor(SensorEntity):
             marine_data = await self._marine_fetcher.get_marine_data() if self._marine_fetcher else {}
             astro_data = await self._get_astro_data()
 
-            # Calculate score
+            # Calculate current score
             result = self._scorer.calculate_score(
                 weather_data=weather_data,
                 tide_data=tide_data,
@@ -365,6 +365,16 @@ class OceanFishingScoreSensor(SensorEntity):
                 "breakdown": result.get("breakdown"),
                 "last_updated": now.isoformat(),
             })
+
+            # Calculate 5-day forecast
+            weather_entity_id = self._config_entry.data.get(CONF_WEATHER_ENTITY)
+            if weather_entity_id:
+                forecast = await self._scorer.calculate_forecast(
+                    weather_entity_id=weather_entity_id,
+                    marine_data=marine_data,
+                    days=5,
+                )
+                self._attrs["forecast"] = forecast
 
             self._last_update_hour = now.hour
 
