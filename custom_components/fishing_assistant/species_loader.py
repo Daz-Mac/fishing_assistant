@@ -42,24 +42,26 @@ class SpeciesLoader:
     def _get_fallback_profiles(self) -> Dict:
         """Return minimal fallback profiles if JSON fails to load."""
         return {
-            "version": "1.0.0-fallback",
+            "version": "2.0.0-fallback",
             "regions": {
                 "global": {
+                    "id": "global",
                     "name": "Global",
                     "description": "General species",
-                    "species": {
-                        "general_mixed": {
-                            "id": "general_mixed",
-                            "name": "General Mixed Species",
-                            "emoji": "🎣",
-                            "region": "global",
-                            "active_months": list(range(1, 13)),
-                            "best_tide": "moving",
-                            "light_preference": "dawn_dusk",
-                            "cloud_bonus": 0.5,
-                            "wave_preference": "moderate",
-                        }
-                    }
+                    "coordinates": None
+                }
+            },
+            "species": {
+                "general_mixed": {
+                    "id": "general_mixed",
+                    "name": "General Mixed Species",
+                    "emoji": "🎣",
+                    "regions": ["global"],
+                    "active_months": list(range(1, 13)),
+                    "best_tide": "moving",
+                    "light_preference": "dawn_dusk",
+                    "cloud_bonus": 0.5,
+                    "wave_preference": "moderate",
                 }
             }
         }
@@ -69,30 +71,29 @@ class SpeciesLoader:
         if not self._profiles:
             return None
 
-        # Search through all regions
-        for region_data in self._profiles.get("regions", {}).values():
-            species_dict = region_data.get("species", {})
-            if species_id in species_dict:
-                profile = species_dict[species_id].copy()
-                profile["id"] = species_id
-                return profile
+        species_dict = self._profiles.get("species", {})
+        if species_id in species_dict:
+            profile = species_dict[species_id].copy()
+            return profile
 
         return None
 
     def get_species_by_region(self, region: str) -> List[Dict]:
-        """Get all species for a specific region."""
+        """Get all species available in a specific region."""
         if not self._profiles:
             return []
 
-        region_data = self._profiles.get("regions", {}).get(region, {})
-        species_dict = region_data.get("species", {})
-        
+        species_dict = self._profiles.get("species", {})
         species_list = []
+        
         for species_id, species_data in species_dict.items():
-            profile = species_data.copy()
-            profile["id"] = species_id
-            profile["region"] = region
-            species_list.append(profile)
+            # Check if this species is available in the requested region
+            available_regions = species_data.get("regions", [])
+            if region in available_regions:
+                profile = species_data.copy()
+                profile["id"] = species_id
+                profile["region"] = region  # Add the current region context
+                species_list.append(profile)
 
         return species_list
 
@@ -106,7 +107,8 @@ class SpeciesLoader:
             regions.append({
                 "id": region_id,
                 "name": region_data.get("name", region_id),
-                "description": region_data.get("description", "")
+                "description": region_data.get("description", ""),
+                "coordinates": region_data.get("coordinates")
             })
 
         return regions
@@ -116,11 +118,30 @@ class SpeciesLoader:
         if not self._profiles:
             return []
 
+        species_dict = self._profiles.get("species", {})
         all_species = []
-        for region_data in self._profiles.get("regions", {}).values():
-            for species_id, species_data in region_data.get("species", {}).items():
-                profile = species_data.copy()
-                profile["id"] = species_id
-                all_species.append(profile)
+        
+        for species_id, species_data in species_dict.items():
+            profile = species_data.copy()
+            profile["id"] = species_id
+            all_species.append(profile)
 
         return all_species
+
+    def get_regions_for_species(self, species_id: str) -> List[str]:
+        """Get list of regions where a species is available."""
+        species = self.get_species(species_id)
+        if species:
+            return species.get("regions", [])
+        return []
+
+    def get_region_info(self, region_id: str) -> Optional[Dict]:
+        """Get detailed information about a specific region."""
+        if not self._profiles:
+            return None
+
+        regions_dict = self._profiles.get("regions", {})
+        if region_id in regions_dict:
+            return regions_dict[region_id].copy()
+
+        return None
