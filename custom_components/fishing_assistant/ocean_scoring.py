@@ -1,7 +1,7 @@
 """Ocean fishing scoring algorithm."""
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 
 from .const import (
     CONF_SPECIES_ID,
@@ -80,12 +80,16 @@ class OceanFishingScorer:
         tide_data: Dict,
         marine_data: Dict,
         astro_data: Dict,
+        target_time: Optional[datetime] = None,
     ) -> Dict:
         """Calculate the fishing score based on all conditions."""
         
         if not self._initialized or not self.species_profile:
             _LOGGER.error("Scorer not initialized, using fallback profile")
             self.species_profile = self._get_fallback_profile()
+        
+        # Use target_time if provided, otherwise use current time
+        current_time = target_time if target_time else datetime.now()
         
         # Extract values from data dictionaries
         tide_state = tide_data.get("state", "unknown")
@@ -99,13 +103,10 @@ class OceanFishingScorer:
         pressure = weather_data.get("pressure", 1013)
         
         # Determine light condition
-        light_condition = self._determine_light_condition(astro_data)
+        light_condition = self._determine_light_condition(astro_data, current_time)
         
         # Get moon phase
         moon_phase = astro_data.get("moon_phase", 0.5)
-        
-        # Current time
-        current_time = datetime.now()
         
         # Calculate component scores
         scores = {}
@@ -162,15 +163,213 @@ class OceanFishingScorer:
             },
         }
 
-    def _determine_light_condition(self, astro_data: Dict) -> str:
-        """Determine current light condition."""
-        now = datetime.now()
+    async def calculate_forecast(
+        self,
+        weather_entity_id: str,
+        marine_data: Dict,
+        days: int = 5,
+    ) -> Dict:
+        """Calculate fishing score forecast for the next N days."""
+        forecast = {}
+        
+        try:
+            # Get weather forecast from Home Assistant
+            weather_state = self.hass.states.get(weather_entity_id)
+            if not weather_state:
+                _LOGGER.warning("Weather entity not found: %s", weather_entity_id)
+                return {}
+            
+            weather_forecast = weather_state.attributes.get("forecast", [])
+            if not weather_forecast:
+                _LOGGER.warning("No weather forecast available")
+                return {}
+            
+            # Get marine forecast
+            marine_forecast = marine_data.get("forecast", {})
+            
+            # Time blocks for each day
+            time_blocks = [
+                {"name": "morning", "start_hour": 6, "end_hour": 12},
+                {"name": "afternoon", "start_hour": 12, "end_hour": 18},
+                {"name": "evening", "start_hour": 18, "end_hour": 24},
+                {"name": "night", "start_hour": 0, "end_hour": 6},
+            ]
+            
+            # Process each day
+            for day_offset in range(days):
+                target_date = datetime.now().date() + timedelta(days=day_offset)
+                date_key = target_date.isoformat()
+                
+                forecast[date_key] = {
+                    "date": date_key,
+                    "day_name": target_date.strftime("%A"),
+                    "periods": {},
+                }
+                
+                # Get weather forecast for this day
+                day_weather = self._get_weather_for_date(weather_forecast, target_date)
+                
+                # Get marine forecast for this day
+                day_marine = marine_forecast.get(date_key, {})
+                
+                # Calculate score for each time block
+                for block in time_blocks:
+                    target_time = datetime.combine(
+                        target_date,
+                        datetime.min.time().replace(hour=block["start_hour"])
+                    )
+                    
+                    # Get tide data for this time
+                    tide_data = await self._get_tide_for_time(target_time)
+                    
+                    # Get astro data for this time
+                    astro_data = await self._get_astro_for_time(target_time)
+                    
+                    # Prepare weather data for this block
+                    weather_data = {
+                        "temperature": day_weather.get("temperature"),
+                        "wind_speed": day_weather.get("wind_speed", 0),
+                        "wind_gust": day_weather.get("wind_gust", day_weather.get("wind_speed", 0)),
+                        "cloud_cover": day_weather.get("cloud_coverage", 50),
+                        "precipitation_probability": day_weather.get("precipitation_probability", 0),
+                        "pressure": day_weather.get("pressure", 1013),
+                    }
+                    
+                    # Prepare marine data for this block
+                    marine_block_data = {
+                        "current": {
+                            "wave_height": day_marine.get("wave_height_avg", 1.0),
+                            "wave_period": day_marine.get("wave_period_avg"),
+                        }
+                    }
+                    
+                    # Calculate score for this time block
+                    result = self.calculate_score(
+                        weather_data=weather_data,
+                        tide_data=tide_data,
+                        marine_data=marine_block_data,
+                        astro_data=astro_data,
+                        target_time=target_time,
+                    )
+                    
+                    forecast[date_key]["periods"][block["name"]] = {
+                        "time_block": block["name"],
+                        "hours": f"{block['start_hour']:02d}:00-{block['end_hour']:02d}:00",
+                        "score": result["score"],
+                        "safety": result["safety"],
+                        "tide_state": result["tide_state"],
+                        "conditions": result["conditions_summary"],
+                    }
+                
+                # Calculate daily average score
+                period_scores = [
+                    p["score"] for p in forecast[date_key]["periods"].values()
+                ]
+                forecast[date_key]["daily_avg_score"] = round(
+                    sum(period_scores) / len(period_scores), 1
+                )
+                
+                # Find best period of the day
+                best_period = max(
+                    forecast[date_key]["periods"].items(),
+                    key=lambda x: x[1]["score"]
+                )
+                forecast[date_key]["best_period"] = best_period[0]
+                forecast[date_key]["best_score"] = best_period[1]["score"]
+        
+        except Exception as e:
+            _LOGGER.error("Error calculating forecast: %s", e, exc_info=True)
+        
+        return forecast
+
+    def _get_weather_for_date(self, weather_forecast: List[Dict], target_date) -> Dict:
+        """Extract weather data for a specific date from forecast."""
+        for forecast_item in weather_forecast:
+            forecast_datetime = forecast_item.get("datetime")
+            if isinstance(forecast_datetime, str):
+                forecast_datetime = datetime.fromisoformat(forecast_datetime.replace('Z', '+00:00'))
+            
+            if forecast_datetime.date() == target_date:
+                return forecast_item
+        
+        # Return default if not found
+        return {
+            "temperature": 15,
+            "wind_speed": 10,
+            "cloud_coverage": 50,
+            "pressure": 1013,
+        }
+
+    async def _get_tide_for_time(self, target_time: datetime) -> Dict:
+        """Get tide data for a specific time."""
+        # This is a simplified version - in production, you'd calculate
+        # tide state for the specific target_time
+        # For now, we'll use a basic approximation
+        
+        hour = target_time.hour
+        
+        # Simple tidal approximation (2 high tides per ~25 hours)
+        tide_hour = hour % 12.42
+        
+        if tide_hour < 3:
+            state = TIDE_STATE_RISING
+        elif tide_hour < 6:
+            state = TIDE_STATE_SLACK_HIGH
+        elif tide_hour < 9:
+            state = TIDE_STATE_FALLING
+        else:
+            state = TIDE_STATE_SLACK_LOW
+        
+        return {
+            "state": state,
+            "strength": 70,  # Default strength
+        }
+
+    async def _get_astro_for_time(self, target_time: datetime) -> Dict:
+        """Get astronomical data for a specific time."""
+        # Get sun data
+        sun_entity = self.hass.states.get("sun.sun")
+        astro = {}
+        
+        if sun_entity:
+            # For forecast, we'd need to calculate sunrise/sunset for target date
+            # For now, use approximate times
+            sunrise = target_time.replace(hour=6, minute=30, second=0)
+            sunset = target_time.replace(hour=18, minute=30, second=0)
+            astro["sunrise"] = sunrise
+            astro["sunset"] = sunset
+        
+        # Get moon phase
+        moon_entity = self.hass.states.get("sensor.moon")
+        if moon_entity:
+            phase_name = moon_entity.state
+            phase_map = {
+                "new_moon": 0.0,
+                "waxing_crescent": 0.125,
+                "first_quarter": 0.25,
+                "waxing_gibbous": 0.375,
+                "full_moon": 0.5,
+                "waning_gibbous": 0.625,
+                "last_quarter": 0.75,
+                "waning_crescent": 0.875,
+            }
+            astro["moon_phase"] = phase_map.get(phase_name, 0.5)
+        else:
+            astro["moon_phase"] = 0.5
+        
+        return astro
+
+    def _determine_light_condition(self, astro_data: Dict, current_time: datetime = None) -> str:
+        """Determine light condition for a specific time."""
+        if current_time is None:
+            current_time = datetime.now()
+        
         sunrise = astro_data.get("sunrise")
         sunset = astro_data.get("sunset")
         
         if not sunrise or not sunset:
             # Fallback based on hour
-            hour = now.hour
+            hour = current_time.hour
             if 6 <= hour < 8:
                 return LIGHT_DAWN
             elif 8 <= hour < 18:
@@ -181,8 +380,8 @@ class OceanFishingScorer:
                 return LIGHT_NIGHT
         
         # Normalize all datetimes to be timezone-naive for comparison
-        if now.tzinfo is not None:
-            now = now.replace(tzinfo=None)
+        if current_time.tzinfo is not None:
+            current_time = current_time.replace(tzinfo=None)
         if sunrise.tzinfo is not None:
             sunrise = sunrise.replace(tzinfo=None)
         if sunset.tzinfo is not None:
@@ -194,11 +393,11 @@ class OceanFishingScorer:
         dusk_start = sunset - timedelta(minutes=30)
         dusk_end = sunset + timedelta(minutes=30)
         
-        if dawn_start <= now <= dawn_end:
+        if dawn_start <= current_time <= dawn_end:
             return LIGHT_DAWN
-        elif dusk_start <= now <= dusk_end:
+        elif dusk_start <= current_time <= dusk_end:
             return LIGHT_DUSK
-        elif sunrise < now < sunset:
+        elif sunrise < current_time < sunset:
             return LIGHT_DAY
         else:
             return LIGHT_NIGHT
