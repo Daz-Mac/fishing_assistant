@@ -37,20 +37,30 @@ class OceanFishingScorer:
         """Initialize the scorer asynchronously."""
         if self._initialized:
             return
+        
+        try:
+            await self.species_loader.async_load_profiles()
             
-        await self.species_loader.async_load_profiles()
-        
-        # Load species profile
-        species_id = self.config.get(CONF_SPECIES_ID, "general_mixed")
-        self.species_profile = self.species_loader.get_species(species_id)
-        
-        if not self.species_profile:
-            _LOGGER.warning(
-                "Species profile '%s' not found, using fallback", species_id
-            )
+            # Load species profile
+            species_id = self.config.get(CONF_SPECIES_ID, "general_mixed")
+            self.species_profile = self.species_loader.get_species(species_id)
+            
+            if not self.species_profile:
+                _LOGGER.warning(
+                    "Species profile '%s' not found, using fallback", species_id
+                )
+                self.species_profile = self._get_fallback_profile()
+            else:
+                _LOGGER.info(
+                    "Loaded species profile: %s", 
+                    self.species_profile.get("name", species_id)
+                )
+            
+            self._initialized = True
+        except Exception as e:
+            _LOGGER.error("Error initializing ocean scorer: %s", e, exc_info=True)
             self.species_profile = self._get_fallback_profile()
-        
-        self._initialized = True
+            self._initialized = True
 
     def _get_fallback_profile(self) -> Dict:
         """Return a fallback species profile."""
@@ -72,6 +82,10 @@ class OceanFishingScorer:
         astro_data: Dict,
     ) -> Dict:
         """Calculate the fishing score based on all conditions."""
+        
+        if not self._initialized or not self.species_profile:
+            _LOGGER.error("Scorer not initialized, using fallback profile")
+            self.species_profile = self._get_fallback_profile()
         
         # Extract values from data dictionaries
         tide_state = tide_data.get("state", "unknown")
