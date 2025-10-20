@@ -1,6 +1,6 @@
 """Ocean fishing scoring algorithm."""
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Optional
 
 from .const import (
@@ -180,14 +180,15 @@ class OceanFishingScorer:
             else:
                 return LIGHT_NIGHT
         
-        # Make sunrise and sunset timezone-aware if they aren't
-        if sunrise.tzinfo is None:
-            sunrise = sunrise.replace(tzinfo=now.tzinfo)
-        if sunset.tzinfo is None:
-            sunset = sunset.replace(tzinfo=now.tzinfo)
+        # Normalize all datetimes to be timezone-naive for comparison
+        if now.tzinfo is not None:
+            now = now.replace(tzinfo=None)
+        if sunrise.tzinfo is not None:
+            sunrise = sunrise.replace(tzinfo=None)
+        if sunset.tzinfo is not None:
+            sunset = sunset.replace(tzinfo=None)
         
         # Calculate dawn and dusk periods (30 min before/after)
-        from datetime import timedelta
         dawn_start = sunrise - timedelta(minutes=30)
         dawn_end = sunrise + timedelta(minutes=30)
         dusk_start = sunset - timedelta(minutes=30)
