@@ -279,10 +279,10 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             "label": "━━━━━ 🐟 TARGET SPECIFIC SPECIES ━━━━━"
         })
         
-        # Group species by region for better organization
+        # Collect all species from all regions (excluding global)
+        all_species = []
         for region in regions:
             region_id = region["id"]
-            region_name = region["name"]
             
             # Skip global region for species listing (it only has general profiles)
             if region_id == "global":
@@ -291,39 +291,39 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             # Get all species for this region
             species_list = self.species_loader.get_species_by_region(region_id)
             
-            # Filter out general profiles
-            species_list = [s for s in species_list 
-                          if not s["id"].startswith("general_mixed") 
-                          and not s["id"].startswith("surf_predators") 
-                          and not s["id"].startswith("flatfish")]
+            # Filter out general profiles and add to collection
+            for species in species_list:
+                if (not species["id"].startswith("general_mixed") 
+                    and not species["id"].startswith("surf_predators") 
+                    and not species["id"].startswith("flatfish")):
+                    
+                    # Check if we already have this species (avoid duplicates)
+                    if not any(s["id"] == species["id"] for s in all_species):
+                        all_species.append(species)
+        
+        # Sort species alphabetically by name
+        all_species.sort(key=lambda s: s.get("name", s["id"]))
+        
+        # Add sorted species to options
+        for species in all_species:
+            emoji = species.get("emoji", "🐟")
+            name = species.get("name", species["id"])
+            species_id = species["id"]
             
-            if species_list:
-                # Add region header
-                species_options.append({
-                    "value": f"header_{region_id}",
-                    "label": f"  ▸ {region_name}"
-                })
-                
-                # Add individual species
-                for species in species_list:
-                    emoji = species.get("emoji", "🐟")
-                    name = species.get("name", species["id"])
-                    species_id = species["id"]
-                    
-                    # Add active months info
-                    active_months = species.get("active_months", [])
-                    if len(active_months) == 12:
-                        season_info = "Year-round"
-                    elif len(active_months) > 0:
-                        season_info = f"Active: {len(active_months)} months"
-                    else:
-                        season_info = ""
-                    
-                    label = f"    {emoji} {name}"
-                    if season_info:
-                        label += f" ({season_info})"
-                    
-                    species_options.append({"value": species_id, "label": label})
+            # Add active months info
+            active_months = species.get("active_months", [])
+            if len(active_months) == 12:
+                season_info = "Year-round"
+            elif len(active_months) > 0:
+                season_info = f"Active: {len(active_months)} months"
+            else:
+                season_info = ""
+            
+            label = f"{emoji} {name}"
+            if season_info:
+                label += f" ({season_info})"
+            
+            species_options.append({"value": species_id, "label": label})
 
         return self.async_show_form(
             step_id="ocean_species",
