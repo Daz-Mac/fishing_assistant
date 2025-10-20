@@ -385,7 +385,11 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
 
             self.ocean_config.update(user_input)
-            return await self.async_step_ocean_data_sources()
+            # Skip the data sources step and go directly to thresholds
+            # Set defaults for tide and marine data
+            self.ocean_config[CONF_TIDE_MODE] = TIDE_MODE_PROXY
+            self.ocean_config[CONF_MARINE_ENABLED] = True
+            return await self.async_step_ocean_thresholds()
 
         return self.async_show_form(
             step_id="ocean_weather",
@@ -394,60 +398,6 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     selector.EntitySelectorConfig(domain="weather")
                 ),
             }),
-        )
-
-    async def async_step_ocean_data_sources(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        """Configure ocean data sources."""
-        errors = {}
-
-        if user_input is not None:
-            # Validate tide sensor if selected
-            if user_input.get(CONF_TIDE_MODE) == TIDE_MODE_SENSOR:
-                if not user_input.get(CONF_TIDE_SENSOR):
-                    errors["base"] = "no_tide_sensor"
-            else:
-                # Remove tide sensor from config if switching back to proxy mode
-                user_input.pop(CONF_TIDE_SENSOR, None)
-
-            if not errors:
-                self.ocean_config.update(user_input)
-                return await self.async_step_ocean_thresholds()
-
-        # Get current tide mode to determine if we show sensor selector
-        tide_mode = user_input.get(CONF_TIDE_MODE, TIDE_MODE_PROXY) if user_input else TIDE_MODE_PROXY
-
-        # Build schema dynamically
-        schema_dict = {
-            vol.Required(
-                CONF_TIDE_MODE,
-                default=tide_mode,
-            ): selector.SelectSelector(
-                selector.SelectSelectorConfig(
-                    options=[
-                        {"value": TIDE_MODE_PROXY, "label": "🌙 Automatic Tide Proxy (Recommended)"},
-                        {"value": TIDE_MODE_SENSOR, "label": "📊 I have my own tide sensor"},
-                    ],
-                    mode="list",
-                )
-            ),
-        }
-
-        # Only show tide sensor selector if user chose custom sensor mode
-        if tide_mode == TIDE_MODE_SENSOR:
-            schema_dict[vol.Optional(CONF_TIDE_SENSOR)] = selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="sensor")
-            )
-
-        # Add marine data toggle
-        schema_dict[vol.Required(
-            CONF_MARINE_ENABLED,
-            default=user_input.get(CONF_MARINE_ENABLED, True) if user_input else True
-        )] = selector.BooleanSelector()
-
-        return self.async_show_form(
-            step_id="ocean_data_sources",
-            data_schema=vol.Schema(schema_dict),
-            errors=errors,
         )
 
     async def async_step_ocean_thresholds(self, user_input: dict[str, Any] | None = None) -> FlowResult:
@@ -464,8 +414,8 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_HABITAT_PRESET: self.ocean_config[CONF_HABITAT_PRESET],
                 CONF_AUTO_APPLY_THRESHOLDS: self.ocean_config[CONF_AUTO_APPLY_THRESHOLDS],
                 CONF_WEATHER_ENTITY: self.ocean_config[CONF_WEATHER_ENTITY],
-                CONF_TIDE_MODE: self.ocean_config[CONF_TIDE_MODE],
-                CONF_MARINE_ENABLED: self.ocean_config[CONF_MARINE_ENABLED],
+                CONF_TIDE_MODE: TIDE_MODE_PROXY,  # Always use proxy
+                CONF_MARINE_ENABLED: True,  # Always enabled
                 CONF_THRESHOLDS: {
                     "max_wind_speed": user_input["max_wind_speed"],
                     "max_gust_speed": user_input["max_gust_speed"],
@@ -474,10 +424,6 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     "max_temperature": user_input["max_temperature"],
                 },
             }
-
-            # Add tide sensor if using custom sensor
-            if self.ocean_config[CONF_TIDE_MODE] == TIDE_MODE_SENSOR:
-                final_config[CONF_TIDE_SENSOR] = self.ocean_config.get(CONF_TIDE_SENSOR)
 
             # Add timezone and elevation
             final_config[CONF_TIMEZONE] = str(self.hass.config.time_zone)
