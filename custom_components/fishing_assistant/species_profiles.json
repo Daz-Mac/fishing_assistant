@@ -1,0 +1,257 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Fishing Assistant Species Profiles",
+  "description": "Community-contributed fish species data for ocean and freshwater fishing",
+  "version": "1.0.0",
+  "regions": {
+    "gibraltar": {
+      "name": "Gibraltar & Strait",
+      "description": "Mediterranean and Atlantic species around Gibraltar",
+      "species": {
+        "bluefin_tuna": {
+          "id": "bluefin_tuna",
+          "name": "Bluefin Tuna",
+          "emoji": "🐟",
+          "scientific_name": "Thunnus thynnus",
+          "region": "gibraltar",
+          "active_months": [5, 6, 7],
+          "best_tide": "any",
+          "light_preference": "dawn_dusk",
+          "cloud_bonus": 0.3,
+          "wave_preference": "moderate",
+          "depth_range": [10, 200],
+          "temp_range": [15, 24],
+          "notes": "Peak season May-July, often near surface during feeding"
+        },
+        "swordfish": {
+          "id": "swordfish",
+          "name": "Swordfish",
+          "emoji": "🗡️",
+          "scientific_name": "Xiphias gladius",
+          "region": "gibraltar",
+          "active_months": [6, 7, 8, 9],
+          "best_tide": "any",
+          "light_preference": "night",
+          "cloud_bonus": 0.0,
+          "wave_preference": "calm",
+          "depth_range": [200, 800],
+          "temp_range": [18, 26],
+          "notes": "Night fishing most productive, deep water species"
+        },
+        "amberjack": {
+          "id": "amberjack",
+          "name": "Greater Amberjack",
+          "emoji": "🐠",
+          "scientific_name": "Seriola dumerili",
+          "region": "gibraltar",
+          "active_months": [4, 5, 6, 7, 8, 9, 10],
+          "best_tide": "moving",
+          "light_preference": "day",
+          "cloud_bonus": 0.5,
+          "wave_preference": "moderate",
+          "depth_range": [20, 100],
+          "temp_range": [16, 24],
+          "notes": "Around wrecks and reefs, strong fighters"
+        },
+        "dentex": {
+          "id": "dentex",
+          "name": "Common Dentex",
+          "emoji": "🐟",
+          "scientific_name": "Dentex dentex",
+          "region": "gibraltar",
+          "active_months": [4, 5, 6, 7, 8],
+          "best_tide": "slack_high",
+          "light_preference": "dawn_dusk",
+          "cloud_bonus": 0.7,
+          "wave_preference": "calm",
+          "depth_range": [15, 50],
+          "temp_range": [15, 22],
+          "notes": "Spring and early summer best, rocky bottoms"
+        },
+        "grouper": {
+          "id": "grouper",
+          "name": "Dusky Grouper",
+          "emoji": "🐡",
+          "scientific_name": "Epinephelus marginatus",
+          "region": "gibraltar",
+          "active_months": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+          "best_tide": "slack",
+          "light_preference": "dawn_dusk",
+          "cloud_bonus": 0.5,
+          "wave_preference": "calm",
+          "depth_range": [10, 50],
+          "temp_range": [14, 24],
+          "notes": "Year-round but best May-September, rocky structure"
+        },
+        "dorado": {
+          "id": "dorado",
+          "name": "Dorado (Mahi-Mahi)",
+          "emoji": "🐬",
+          "scientific_name": "Coryphaena hippurus",
+          "region": "gibraltar",
+          "active_months": [6, 7, 8, 9],
+          "best_tide": "any",
+          "light_preference": "day",
+          "cloud_bonus": 0.3,
+          "wave_preference": "moderate",
+          "depth_range": [0, 50],
+          "temp_range": [20, 28],
+          "notes": "Summer visitor, surface feeder, follows floating debris"
+        },
+        "seabass": {
+          "id": "seabass",
+          "name": "European Seabass",
+          "emoji": "🐟",
+          "scientific_name": "Dicentrarchus labrax",
+          "region": "gibraltar",
+          "active_months": [3, 4, 5, 6, 7, 8, 9, 10, 11],
+          "best_tide": "rising",
+          "light_preference": "low_light",
+          "cloud_bonus": 1.0,
+          "wave_preference": "active",
+          "wave_bonus": true,
+          "depth_range": [0, 30],
+          "temp_range": [12, 22],
+          "notes": "Surf predator, loves rough water and low light"
+        },
+        "bream_gilthead": {
+          "id": "bream_gilthead",
+          "name": "Gilthead Seabream",
+          "emoji": "🐠",
+          "scientific_name": "Sparus aurata",
+          "region": "gibraltar",
+          "active_months": [5, 6, 7, 8, 9, 10],
+          "best_tide": "slack_high",
+          "light_preference": "day",
+          "cloud_bonus": 0.0,
+          "wave_preference": "calm",
+          "depth_range": [5, 30],
+          "temp_range": [16, 24],
+          "notes": "Summer species, sandy/rocky bottoms"
+        }
+      }
+    },
+    "mediterranean_general": {
+      "name": "Mediterranean Sea",
+      "description": "Common Mediterranean species",
+      "species": {
+        "bonito": {
+          "id": "bonito",
+          "name": "Atlantic Bonito",
+          "emoji": "🐟",
+          "scientific_name": "Sarda sarda",
+          "region": "mediterranean_general",
+          "active_months": [5, 6, 7, 8, 9, 10],
+          "best_tide": "any",
+          "light_preference": "dawn",
+          "cloud_bonus": 0.3,
+          "wave_preference": "moderate",
+          "depth_range": [0, 100],
+          "temp_range": [18, 26]
+        },
+        "mackerel": {
+          "id": "mackerel",
+          "name": "Atlantic Mackerel",
+          "emoji": "🐟",
+          "scientific_name": "Scomber scombrus",
+          "region": "mediterranean_general",
+          "active_months": [4, 5, 6, 7, 8, 9, 10],
+          "best_tide": "any",
+          "light_preference": "day",
+          "cloud_bonus": 0.2,
+          "wave_preference": "moderate",
+          "depth_range": [0, 50],
+          "temp_range": [12, 20]
+        },
+        "octopus": {
+          "id": "octopus",
+          "name": "Common Octopus",
+          "emoji": "🐙",
+          "scientific_name": "Octopus vulgaris",
+          "region": "mediterranean_general",
+          "active_months": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+          "best_tide": "slack_low",
+          "light_preference": "night",
+          "cloud_bonus": 0.0,
+          "wave_preference": "calm",
+          "depth_range": [0, 20],
+          "temp_range": [12, 26]
+        }
+      }
+    },
+    "atlantic_north": {
+      "name": "North Atlantic",
+      "description": "Northern European Atlantic coast",
+      "species": {
+        "cod": {
+          "id": "cod",
+          "name": "Atlantic Cod",
+          "emoji": "🐟",
+          "scientific_name": "Gadus morhua",
+          "region": "atlantic_north",
+          "active_months": [10, 11, 12, 1, 2, 3],
+          "best_tide": "moving",
+          "light_preference": "day",
+          "cloud_bonus": 0.5,
+          "wave_preference": "moderate",
+          "depth_range": [10, 100],
+          "temp_range": [4, 12]
+        },
+        "pollock": {
+          "id": "pollock",
+          "name": "Pollock",
+          "emoji": "🐟",
+          "scientific_name": "Pollachius pollachius",
+          "region": "atlantic_north",
+          "active_months": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+          "best_tide": "moving",
+          "light_preference": "dawn_dusk",
+          "cloud_bonus": 0.7,
+          "wave_preference": "moderate",
+          "depth_range": [5, 50],
+          "temp_range": [8, 16]
+        }
+      }
+    },
+    "global": {
+      "name": "Global",
+      "description": "General species profiles",
+      "species": {
+        "general_mixed": {
+          "id": "general_mixed",
+          "name": "General Mixed Species",
+          "emoji": "🎣",
+          "region": "global",
+          "active_months": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+          "best_tide": "moving",
+          "light_preference": "dawn_dusk",
+          "cloud_bonus": 0.5,
+          "wave_preference": "moderate"
+        },
+        "surf_predators": {
+          "id": "surf_predators",
+          "name": "Surf Predators",
+          "emoji": "🦈",
+          "region": "global",
+          "active_months": [3, 4, 5, 6, 7, 8, 9, 10, 11],
+          "best_tide": "rising",
+          "light_preference": "low_light",
+          "cloud_bonus": 1.0,
+          "wave_preference": "active",
+          "wave_bonus": true
+        },
+        "flatfish": {
+          "id": "flatfish",
+          "name": "Flatfish (Flounder, Sole)",
+          "emoji": "🐟",
+          "region": "global",
+          "active_months": [1, 2, 3, 4, 5, 9, 10, 11, 12],
+          "best_tide": "slack_high",
+          "light_preference": "day",
+          "cloud_bonus": 0.0,
+          "wave_preference": "calm"
+        }
+      }
+    }
+  }
+}
