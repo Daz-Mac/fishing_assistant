@@ -77,8 +77,12 @@ class MarineDataFetcher:
         # Convert times to timezone-aware datetime objects using dt_util
         parsed_times = []
         for t in times:
+            # dt_util.parse_datetime returns timezone-aware datetime
             parsed_time = dt_util.parse_datetime(t)
             if parsed_time:
+                # Ensure it's timezone-aware
+                if parsed_time.tzinfo is None:
+                    parsed_time = dt_util.as_local(parsed_time)
                 parsed_times.append(parsed_time)
         
         if not parsed_times:
