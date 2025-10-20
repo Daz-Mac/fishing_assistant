@@ -6,6 +6,8 @@ from typing import Dict, Optional
 from .const import (
     CONF_SPECIES_ID,
     CONF_SPECIES_REGION,
+    CONF_HABITAT_PRESET,
+    HABITAT_PRESETS,
     TIDE_STATE_RISING,
     TIDE_STATE_FALLING,
     TIDE_STATE_SLACK_HIGH,
@@ -28,9 +30,18 @@ class OceanFishingScorer:
         self.hass = hass
         self.config = config
         self.species_loader = SpeciesLoader(hass)
+        self.species_profile = None
+        self._initialized = False
+
+    async def async_initialize(self):
+        """Initialize the scorer asynchronously."""
+        if self._initialized:
+            return
+            
+        await self.species_loader.async_load_profiles()
         
         # Load species profile
-        species_id = config.get(CONF_SPECIES_ID, "general_mixed")
+        species_id = self.config.get(CONF_SPECIES_ID, "general_mixed")
         self.species_profile = self.species_loader.get_species(species_id)
         
         if not self.species_profile:
@@ -38,6 +49,8 @@ class OceanFishingScorer:
                 "Species profile '%s' not found, using fallback", species_id
             )
             self.species_profile = self._get_fallback_profile()
+        
+        self._initialized = True
 
     def _get_fallback_profile(self) -> Dict:
         """Return a fallback species profile."""
@@ -53,18 +66,34 @@ class OceanFishingScorer:
 
     def calculate_score(
         self,
-        tide_state: str,
-        tide_strength: float,
-        wave_height: float,
-        wind_speed: float,
-        cloud_cover: float,
-        light_condition: str,
-        moon_phase: float,
-        pressure: float,
-        current_time: datetime,
+        weather_data: Dict,
+        tide_data: Dict,
+        marine_data: Dict,
+        astro_data: Dict,
     ) -> Dict:
         """Calculate the fishing score based on all conditions."""
         
+        # Extract values from data dictionaries
+        tide_state = tide_data.get("state", "unknown")
+        tide_strength = tide_data.get("strength", 50) / 100.0  # Convert to 0-1
+        
+        current_marine = marine_data.get("current", {})
+        wave_height = current_marine.get("wave_height", 1.0)
+        
+        wind_speed = weather_data.get("wind_speed", 0)
+        cloud_cover = weather_data.get("cloud_cover", 50)
+        pressure = weather_data.get("pressure", 1013)
+        
+        # Determine light condition
+        light_condition = self._determine_light_condition(astro_data)
+        
+        # Get moon phase
+        moon_phase = astro_data.get("moon_phase", 0.5)
+        
+        # Current time
+        current_time = datetime.now()
+        
+        # Calculate component scores
         scores = {}
         weights = {
             "tide": 0.25,
@@ -102,13 +131,112 @@ class OceanFishingScorer:
         
         # Scale to 0-10
         final_score = round(total_score * 10, 1)
+        
+        # Check safety
+        safety_status = self._check_safety(weather_data, marine_data)
 
         return {
             "score": final_score,
-            "component_scores": scores,
-            "weights": weights,
-            "species": self.species_profile.get("name", "Unknown"),
+            "safety": safety_status,
+            "tide_state": tide_state,
+            "best_window": self._determine_best_window(astro_data, tide_data),
+            "conditions_summary": self._generate_summary(scores, final_score),
+            "breakdown": {
+                "component_scores": scores,
+                "weights": weights,
+                "species": self.species_profile.get("name", "Unknown"),
+            },
         }
+
+    def _determine_light_condition(self, astro_data: Dict) -> str:
+        """Determine current light condition."""
+        now = datetime.now()
+        sunrise = astro_data.get("sunrise")
+        sunset = astro_data.get("sunset")
+        
+        if not sunrise or not sunset:
+            # Fallback based on hour
+            hour = now.hour
+            if 6 <= hour < 8:
+                return LIGHT_DAWN
+            elif 8 <= hour < 18:
+                return LIGHT_DAY
+            elif 18 <= hour < 20:
+                return LIGHT_DUSK
+            else:
+                return LIGHT_NIGHT
+        
+        # Make sunrise and sunset timezone-aware if they aren't
+        if sunrise.tzinfo is None:
+            sunrise = sunrise.replace(tzinfo=now.tzinfo)
+        if sunset.tzinfo is None:
+            sunset = sunset.replace(tzinfo=now.tzinfo)
+        
+        # Calculate dawn and dusk periods (30 min before/after)
+        from datetime import timedelta
+        dawn_start = sunrise - timedelta(minutes=30)
+        dawn_end = sunrise + timedelta(minutes=30)
+        dusk_start = sunset - timedelta(minutes=30)
+        dusk_end = sunset + timedelta(minutes=30)
+        
+        if dawn_start <= now <= dawn_end:
+            return LIGHT_DAWN
+        elif dusk_start <= now <= dusk_end:
+            return LIGHT_DUSK
+        elif sunrise < now < sunset:
+            return LIGHT_DAY
+        else:
+            return LIGHT_NIGHT
+
+    def _check_safety(self, weather_data: Dict, marine_data: Dict) -> str:
+        """Check if conditions are safe for fishing."""
+        habitat_preset = self.config.get(CONF_HABITAT_PRESET, "rocky_point")
+        habitat = HABITAT_PRESETS.get(habitat_preset, HABITAT_PRESETS["rocky_point"])
+        
+        wind_speed = weather_data.get("wind_speed", 0)
+        wind_gust = weather_data.get("wind_gust", wind_speed)
+        wave_height = marine_data.get("current", {}).get("wave_height", 0)
+        
+        max_wind = habitat.get("max_wind_speed", 30)
+        max_gust = habitat.get("max_gust_speed", 45)
+        max_wave = habitat.get("max_wave_height", 2.5)
+        
+        if wind_speed > max_wind or wind_gust > max_gust or wave_height > max_wave:
+            return "unsafe"
+        elif wind_speed > max_wind * 0.8 or wind_gust > max_gust * 0.8 or wave_height > max_wave * 0.8:
+            return "caution"
+        else:
+            return "safe"
+
+    def _determine_best_window(self, astro_data: Dict, tide_data: Dict) -> str:
+        """Determine the best fishing window."""
+        # Simple implementation - can be enhanced
+        tide_state = tide_data.get("state", "unknown")
+        
+        if tide_state in [TIDE_STATE_RISING, TIDE_STATE_FALLING]:
+            return "Current tide movement is favorable"
+        elif tide_state == TIDE_STATE_SLACK_HIGH:
+            return "Slack high tide - good for some species"
+        elif tide_state == TIDE_STATE_SLACK_LOW:
+            return "Slack low tide"
+        else:
+            return "Check tide times for best window"
+
+    def _generate_summary(self, scores: Dict, final_score: float) -> str:
+        """Generate a human-readable summary."""
+        if final_score >= 8:
+            quality = "Excellent"
+        elif final_score >= 6:
+            quality = "Good"
+        elif final_score >= 4:
+            quality = "Fair"
+        else:
+            quality = "Poor"
+        
+        # Find best contributing factor
+        best_factor = max(scores.items(), key=lambda x: x[1])
+        
+        return f"{quality} conditions. Best factor: {best_factor[0]}"
 
     def _score_tide(self, tide_state: str, tide_strength: float) -> float:
         """Score based on tide conditions (0-1)."""
