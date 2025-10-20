@@ -227,76 +227,82 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     async def async_step_ocean_species(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        """Configure species selection."""
+        """Configure species/region selection - combined step."""
         # Initialize species loader if not already done
         if self.species_loader is None:
             self.species_loader = SpeciesLoader(self.hass)
             await self.species_loader.async_load_profiles()
 
         if user_input is not None:
-            self.ocean_config.update(user_input)
-            return await self.async_step_ocean_species_detail()
+            # Extract species_id and determine region from the selection
+            species_id = user_input[CONF_SPECIES_ID]
+            
+            # Check if this is a general_mixed selection
+            if species_id.startswith("general_mixed_"):
+                # Extract region from the ID
+                species_region = species_id.replace("general_mixed_", "")
+                species_id = "general_mixed"
+            else:
+                # Find which region this species belongs to
+                species_profile = self.species_loader.get_species(species_id)
+                if species_profile:
+                    species_region = species_profile.get("region", "global")
+                else:
+                    species_region = "global"
+            
+            self.ocean_config[CONF_SPECIES_ID] = species_id
+            self.ocean_config[CONF_SPECIES_REGION] = species_region
+            
+            return await self.async_step_ocean_habitat()
 
-        # Get available regions
+        # Build a comprehensive species list organized by region
         regions = self.species_loader.get_regions()
-        region_options = [
-            {"value": region["id"], "label": f"{region['name']} - {region['description']}"}
-            for region in regions
-        ]
+        species_options = []
+        
+        for region in regions:
+            region_id = region["id"]
+            region_name = region["name"]
+            
+            # Add a "General Mixed" option for each region first
+            species_options.append({
+                "value": f"general_mixed_{region_id}",
+                "label": f"🎣 {region_name} - General Mixed Species"
+            })
+            
+            # Get all species for this region
+            species_list = self.species_loader.get_species_by_region(region_id)
+            
+            # Add individual species
+            for species in species_list:
+                # Skip if it's already a general_mixed profile
+                if species["id"].startswith("general_mixed"):
+                    continue
+                    
+                emoji = species.get("emoji", "🐟")
+                name = species.get("name", species["id"])
+                species_id = species["id"]
+                
+                # Add active months info
+                active_months = species.get("active_months", [])
+                if len(active_months) == 12:
+                    season_info = "Year-round"
+                elif len(active_months) > 0:
+                    season_info = f"Active: {len(active_months)} months"
+                else:
+                    season_info = ""
+                
+                label = f"  {emoji} {name}"
+                if season_info:
+                    label += f" ({season_info})"
+                
+                species_options.append({"value": species_id, "label": label})
 
         return self.async_show_form(
             step_id="ocean_species",
             data_schema=vol.Schema({
                 vol.Required(
-                    CONF_SPECIES_REGION,
-                    default="gibraltar",
-                ): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=region_options,
-                        mode="dropdown",
-                    )
-                ),
-            }),
-        )
-
-    async def async_step_ocean_species_detail(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        """Select specific species from chosen region."""
-        if user_input is not None:
-            self.ocean_config.update(user_input)
-            return await self.async_step_ocean_habitat()
-
-        # Get species for selected region
-        region = self.ocean_config.get(CONF_SPECIES_REGION, "global")
-        species_list = self.species_loader.get_species_by_region(region)
-
-        # Build species options
-        species_options = []
-        for species in species_list:
-            emoji = species.get("emoji", "🐟")
-            name = species.get("name", species["id"])
-            species_id = species["id"]
-            
-            # Add active months info
-            active_months = species.get("active_months", [])
-            if len(active_months) == 12:
-                season_info = "Year-round"
-            elif len(active_months) > 0:
-                season_info = f"Active: {len(active_months)} months"
-            else:
-                season_info = ""
-            
-            label = f"{emoji} {name}"
-            if season_info:
-                label += f" ({season_info})"
-            
-            species_options.append({"value": species_id, "label": label})
-
-        return self.async_show_form(
-            step_id="ocean_species_detail",
-            data_schema=vol.Schema({
-                vol.Required(
                     CONF_SPECIES_ID,
-                    default="general_mixed",
+                    default="general_mixed_gibraltar",  # Default to Gibraltar general
                 ): selector.SelectSelector(
                     selector.SelectSelectorConfig(
                         options=species_options,
@@ -304,6 +310,9 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     )
                 ),
             }),
+            description_placeholders={
+                "info": "Select a specific species to target, or choose a general mixed species profile for your region."
+            }
         )
 
     async def async_step_ocean_habitat(self, user_input: dict[str, Any] | None = None) -> FlowResult:
