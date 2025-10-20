@@ -4,20 +4,21 @@ import logging
 import os
 from typing import Dict, List, Optional
 
+from homeassistant.core import HomeAssistant
+
 _LOGGER = logging.getLogger(__name__)
 
 
 class SpeciesLoader:
     """Load and manage species profiles from JSON."""
 
-    def __init__(self, hass):
+    def __init__(self, hass: HomeAssistant):
         """Initialize the species loader."""
         self.hass = hass
         self._profiles = None
-        self._load_profiles()
 
-    def _load_profiles(self):
-        """Load species profiles from JSON file."""
+    async def async_load_profiles(self):
+        """Load species profiles from JSON file asynchronously."""
         try:
             # Get the path to the JSON file
             json_path = os.path.join(
@@ -25,8 +26,12 @@ class SpeciesLoader:
                 "species_profiles.json"
             )
             
-            with open(json_path, 'r', encoding='utf-8') as f:
-                self._profiles = json.load(f)
+            # Use async file reading
+            def _load_json():
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            
+            self._profiles = await self.hass.async_add_executor_job(_load_json)
                 
             _LOGGER.info("Loaded species profiles version %s", 
                         self._profiles.get("version", "unknown"))
@@ -41,6 +46,7 @@ class SpeciesLoader:
             "regions": {
                 "global": {
                     "name": "Global",
+                    "description": "General species",
                     "species": {
                         "general_mixed": {
                             "id": "general_mixed",
