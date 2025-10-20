@@ -80,6 +80,7 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
     name = data["name"]
     lat = data["latitude"]
     lon = data["longitude"]
+    weather_entity = data.get(CONF_WEATHER_ENTITY)
 
     # Initialize data fetchers
     tide_proxy = None
@@ -132,6 +133,21 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
                 hass=hass,
                 config_entry=config_entry,
                 marine_fetcher=marine_fetcher,
+            )
+        )
+
+    # Create wind sensors (NEW)
+    if weather_entity:
+        sensors.append(
+            WindSpeedSensor(
+                hass=hass,
+                config_entry=config_entry,
+            )
+        )
+        sensors.append(
+            WindGustSensor(
+                hass=hass,
+                config_entry=config_entry,
             )
         )
 
@@ -679,6 +695,165 @@ class WavePeriodSensor(SensorEntity):
             self._state = current.get("wave_period")
         except Exception as e:
             _LOGGER.error(f"Error updating wave period: {e}")
+            self._state = None
+
+    async def async_added_to_hass(self):
+        await self.async_update()
+
+class WindSpeedSensor(SensorEntity):
+    """Sensor for wind speed."""
+
+    should_poll = True
+
+    def __init__(self, hass, config_entry):
+        """Initialize the wind speed sensor."""
+        self.hass = hass
+        self._config_entry = config_entry
+
+        data = config_entry.data
+        name = data["name"]
+
+        self._device_identifier = f"{name}_{data['latitude']}_{data['longitude']}_ocean"
+        self._name = f"{name.lower().replace(' ', '_')}_wind_speed"
+        self._friendly_name = f"{name} Wind Speed"
+        self._state = None
+
+    @property
+    def name(self):
+        return self._friendly_name
+
+    @property
+    def unique_id(self):
+        return self._name
+
+    @property
+    def icon(self):
+        if self._state is None:
+            return "mdi:weather-windy"
+        elif self._state < 10:
+            return "mdi:weather-windy"
+        elif self._state < 20:
+            return "mdi:weather-windy-variant"
+        else:
+            return "mdi:weather-hurricane"
+
+    @property
+    def native_value(self):
+        return self._state
+
+    @property
+    def native_unit_of_measurement(self):
+        return UnitOfSpeed.KILOMETERS_PER_HOUR
+
+    @property
+    def device_class(self):
+        return SensorDeviceClass.WIND_SPEED
+
+    @property
+    def device_info(self):
+        return {
+            "identifiers": {(DOMAIN, self._device_identifier)},
+            "name": self._config_entry.data["name"],
+            "manufacturer": "Fishing Assistant",
+            "model": "Ocean Fishing Score",
+        }
+
+    async def async_update(self):
+        """Update wind speed."""
+        try:
+            weather_entity_id = self._config_entry.data.get(CONF_WEATHER_ENTITY)
+            if not weather_entity_id:
+                return
+
+            weather_state = self.hass.states.get(weather_entity_id)
+            if not weather_state:
+                return
+
+            self._state = weather_state.attributes.get("wind_speed")
+        except Exception as e:
+            _LOGGER.error(f"Error updating wind speed: {e}")
+            self._state = None
+
+    async def async_added_to_hass(self):
+        await self.async_update()
+
+
+class WindGustSensor(SensorEntity):
+    """Sensor for wind gust speed."""
+
+    should_poll = True
+
+    def __init__(self, hass, config_entry):
+        """Initialize the wind gust sensor."""
+        self.hass = hass
+        self._config_entry = config_entry
+
+        data = config_entry.data
+        name = data["name"]
+
+        self._device_identifier = f"{name}_{data['latitude']}_{data['longitude']}_ocean"
+        self._name = f"{name.lower().replace(' ', '_')}_wind_gust"
+        self._friendly_name = f"{name} Wind Gust"
+        self._state = None
+
+    @property
+    def name(self):
+        return self._friendly_name
+
+    @property
+    def unique_id(self):
+        return self._name
+
+    @property
+    def icon(self):
+        if self._state is None:
+            return "mdi:weather-windy"
+        elif self._state < 15:
+            return "mdi:weather-windy"
+        elif self._state < 30:
+            return "mdi:weather-windy-variant"
+        else:
+            return "mdi:weather-hurricane"
+
+    @property
+    def native_value(self):
+        return self._state
+
+    @property
+    def native_unit_of_measurement(self):
+        return UnitOfSpeed.KILOMETERS_PER_HOUR
+
+    @property
+    def device_class(self):
+        return SensorDeviceClass.WIND_SPEED
+
+    @property
+    def device_info(self):
+        return {
+            "identifiers": {(DOMAIN, self._device_identifier)},
+            "name": self._config_entry.data["name"],
+            "manufacturer": "Fishing Assistant",
+            "model": "Ocean Fishing Score",
+        }
+
+    async def async_update(self):
+        """Update wind gust speed."""
+        try:
+            weather_entity_id = self._config_entry.data.get(CONF_WEATHER_ENTITY)
+            if not weather_entity_id:
+                return
+
+            weather_state = self.hass.states.get(weather_entity_id)
+            if not weather_state:
+                return
+
+            # Try wind_gust_speed first, fallback to wind_speed
+            self._state = weather_state.attributes.get(
+                "wind_gust_speed",
+                weather_state.attributes.get("wind_speed")
+            )
+        except Exception as e:
+            _LOGGER.error(f"Error updating wind gust: {e}")
             self._state = None
 
     async def async_added_to_hass(self):
