@@ -369,7 +369,7 @@ class OceanFishingScoreSensor(SensorEntity):
             self._last_update_hour = now.hour
 
         except Exception as e:
-            _LOGGER.error(f"Error updating ocean fishing score: {e}")
+            _LOGGER.error(f"Error updating ocean fishing score: {e}", exc_info=True)
             self._state = None
 
     async def _get_weather_data(self):
@@ -427,6 +427,8 @@ class OceanFishingScoreSensor(SensorEntity):
 
     async def async_added_to_hass(self):
         """When entity is added to hass."""
+        # Initialize the scorer asynchronously
+        await self._scorer.async_initialize()
         await self.async_update()
 
 
