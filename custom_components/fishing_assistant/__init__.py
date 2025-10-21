@@ -3,8 +3,9 @@ from pathlib import Path
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers import config_validation as cv
 from homeassistant.core import HomeAssistant
-from homeassistant.components.frontend import add_extra_js_url
-from homeassistant.components.lovelace import _register_panel
+from homeassistant.components.http import StaticPathConfig
+from homeassistant.components.frontend import async_register_built_in_panel
+from homeassistant.components.lovelace.resources import ResourceStorageCollection
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -47,12 +48,42 @@ async def _register_custom_card(hass: HomeAssistant) -> None:
         return
     
     hass.data.setdefault(DOMAIN, {})
+    
+    # Register the card resource directory
+    card_dir = Path(__file__).parent / "www"
+    card_url = "/fishing_assistant_local"
+    
+    # Register the static path synchronously
+    hass.http.register_static_path(
+        card_url,
+        str(card_dir),
+        cache_headers=False
+    )
+    
+    # Auto-register the resource in Lovelace
+    resource_url = f"{card_url}/fishing-assistant-card.js"
+    
+    try:
+        # Get the Lovelace resources collection
+        if "lovelace" in hass.data and "resources" in hass.data["lovelace"]:
+            resources: ResourceStorageCollection = hass.data["lovelace"]["resources"]
+            
+            # Check if resource already exists
+            existing = [item for item in resources.async_items() if item.get("url") == resource_url]
+            
+            if not existing:
+                # Add the resource
+                await resources.async_create_item({
+                    "res_type": "module",
+                    "url": resource_url,
+                })
+                _LOGGER.info("Auto-registered Fishing Assistant card resource")
+            else:
+                _LOGGER.debug("Fishing Assistant card resource already registered")
+        else:
+            _LOGGER.warning("Lovelace resources not available, card must be added manually")
+    except Exception as e:
+        _LOGGER.warning("Could not auto-register card resource: %s. Add manually: %s", e, resource_url)
+    
     hass.data[DOMAIN]["fishing_assistant_card_registered"] = True
-    
-    # Register the card resource URL
-    card_url = "/fishing_assistant_local/fishing-assistant-card.js"
-    
-    # Add the JS URL to frontend
-    add_extra_js_url(hass, card_url)
-    
-    _LOGGER.info("Registered Fishing Assistant card at %s", card_url)
+    _LOGGER.info("Registered Fishing Assistant card at %s", resource_url)
