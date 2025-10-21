@@ -179,7 +179,7 @@ class OceanFishingScorer:
         """Calculate fishing score forecast for the next N days.
         
         Uses a hybrid approach:
-        - For today: Only shows remaining periods (skips past periods)
+        - For today: Only shows remaining periods (skips past/current periods)
         - For future days: Shows all 4 periods (morning, afternoon, evening, night)
         """
         forecast = {}
@@ -227,7 +227,6 @@ class OceanFishingScorer:
             
             # Get current time for filtering past periods
             now = datetime.now()
-            current_hour = now.hour
             
             # Process each day
             for day_offset in range(days):
@@ -249,25 +248,24 @@ class OceanFishingScorer:
                 
                 # Calculate score for each time block
                 for block in time_blocks:
-                    # Skip past periods for today (hybrid approach)
-                    # A period is "past" if current time is at or after its end time
+                    # Skip past/current periods for today (hybrid approach)
                     if is_today:
-                        # Create the end time for this block
-                        block_end_time = datetime.combine(
-                            target_date,
-                            datetime.min.time().replace(hour=block["end_hour"] if block["end_hour"] < 24 else 0)
-                        )
-                        # For night period that ends at 6 AM, it's actually the next day
-                        if block["end_hour"] == 6 and block["start_hour"] == 0:
-                            block_end_time = block_end_time + timedelta(days=1)
-                        
-                        # Skip if we're past the end of this period
-                        if now >= block_end_time:
-                            _LOGGER.debug(
-                                "Skipping past period %s (ends at %s, current time is %s)",
-                                block["name"], block_end_time.strftime("%H:%M"), now.strftime("%H:%M")
+                        # For periods that don't cross midnight (morning, afternoon, evening)
+                        if block["start_hour"] < block["end_hour"]:
+                            block_start_time = datetime.combine(
+                                target_date,
+                                datetime.min.time().replace(hour=block["start_hour"])
                             )
-                            continue
+                            
+                            # Skip if this period has already started (we're in it or past it)
+                            if now >= block_start_time:
+                                _LOGGER.debug(
+                                    "Skipping current/past period %s (starts at %s, current time is %s)",
+                                    block["name"], block_start_time.strftime("%H:%M"), now.strftime("%H:%M")
+                                )
+                                continue
+                        # Night period (0-6) is always shown for today as it's tonight
+                    
                     target_time = datetime.combine(
                         target_date,
                         datetime.min.time().replace(hour=block["start_hour"])
