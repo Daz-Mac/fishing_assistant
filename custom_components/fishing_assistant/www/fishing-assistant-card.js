@@ -333,13 +333,25 @@ class FishingAssistantCard extends HTMLElement {
 
 // Visual Editor Component
 class FishingAssistantCardEditor extends HTMLElement {
+  constructor() {
+    super();
+    this._config = {};
+  }
+
   setConfig(config) {
-    this._config = config;
-    this.render();
+    this._config = { ...config };
+    if (!this.rendered) {
+      this.render();
+      this.rendered = true;
+    }
   }
 
   set hass(hass) {
     this._hass = hass;
+    if (!this.rendered && this._config) {
+      this.render();
+      this.rendered = true;
+    }
   }
 
   configChanged(newConfig) {
@@ -356,32 +368,57 @@ class FishingAssistantCardEditor extends HTMLElement {
       return;
     }
 
-    // Get all fishing assistant entities
-    const entities = Object.keys(this._hass.states).filter(
-      (eid) => eid.startsWith('sensor.') && eid.includes('fishing')
-    );
+    // Get all fishing assistant sensor entities
+    const entities = Object.keys(this._hass.states)
+      .filter(eid => eid.startsWith('sensor.') && 
+              (eid.includes('fishing') || 
+               this._hass.states[eid].attributes.species_focus))
+      .sort();
 
     this.innerHTML = `
-      <div style="padding: 16px;">
-        <ha-entity-picker
-          label="Fishing Score Entity"
-          .hass="${this._hass}"
-          .value="${this._config.entity || ''}"
-          .includeDomains="${['sensor']}"
-          allow-custom-entity
-        ></ha-entity-picker>
+      <style>
+        .config-row {
+          display: flex;
+          flex-direction: column;
+          padding: 16px;
+        }
+        label {
+          font-weight: 500;
+          margin-bottom: 8px;
+          color: var(--primary-text-color);
+        }
+        select {
+          padding: 8px;
+          border: 1px solid var(--divider-color);
+          border-radius: 4px;
+          background: var(--card-background-color);
+          color: var(--primary-text-color);
+          font-size: 14px;
+        }
+        .hint {
+          font-size: 12px;
+          color: var(--secondary-text-color);
+          margin-top: 4px;
+        }
+      </style>
+      <div class="config-row">
+        <label for="entity-select">Fishing Score Entity (Required)</label>
+        <select id="entity-select">
+          <option value="">-- Select Entity --</option>
+          ${entities.map(eid => `
+            <option value="${eid}" ${this._config.entity === eid ? 'selected' : ''}>
+              ${this._hass.states[eid].attributes.friendly_name || eid}
+            </option>
+          `).join('')}
+        </select>
+        <div class="hint">Select the fishing score sensor entity to display</div>
       </div>
     `;
 
-    const picker = this.querySelector('ha-entity-picker');
-    picker.addEventListener('value-changed', (ev) => {
-      if (!this._config || !this._hass) {
-        return;
-      }
-      if (ev.detail.value) {
-        this._config = { ...this._config, entity: ev.detail.value };
-        this.configChanged(this._config);
-      }
+    const select = this.querySelector('#entity-select');
+    select.addEventListener('change', (ev) => {
+      this._config = { ...this._config, entity: ev.target.value };
+      this.configChanged(this._config);
     });
   }
 }
