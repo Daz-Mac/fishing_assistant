@@ -36,8 +36,11 @@ class FishingAssistantCard extends HTMLElement {
   }
 
   render(entity) {
-    const score = parseInt(entity.state);
     const attrs = entity.attributes;
+    
+    // Convert score from 0-10 to 0-100 scale
+    const rawScore = parseFloat(entity.state);
+    const score = Math.round(rawScore * 10);
     
     // Determine score color
     const getScoreColor = (score) => {
@@ -56,30 +59,30 @@ class FishingAssistantCard extends HTMLElement {
     const getTideEmoji = (tide) => {
       const tideMap = {
         'high_tide': '🌊',
+        'slack_high': '🌊',
         'low_tide': '🏖️',
+        'slack_low': '🏖️',
         'rising': '📈',
         'falling': '📉'
       };
       return tideMap[tide] || '〰️';
     };
 
-    // Get moon phase emoji
-    const getMoonEmoji = (phase) => {
-      const moonMap = {
-        'new_moon': '🌑',
-        'waxing_crescent': '🌒',
-        'first_quarter': '🌓',
-        'waxing_gibbous': '🌔',
-        'full_moon': '🌕',
-        'waning_gibbous': '🌖',
-        'last_quarter': '🌗',
-        'waning_crescent': '🌘'
+    // Get safety emoji
+    const getSafetyEmoji = (safety) => {
+      const safetyMap = {
+        'safe': '✅',
+        'caution': '⚠️',
+        'unsafe': '🚫'
       };
-      return moonMap[phase] || '🌙';
+      return safetyMap[safety] || '❓';
     };
 
     const scoreColor = getScoreColor(score);
     const scoreLabel = getScoreLabel(score);
+
+    // Get moon score as percentage
+    const moonScore = attrs.component_scores?.moon ? Math.round(attrs.component_scores.moon * 100) : null;
 
     this.shadowRoot.innerHTML = `
       <style>
@@ -97,6 +100,10 @@ class FishingAssistantCard extends HTMLElement {
           font-size: 24px;
           font-weight: 500;
           color: var(--primary-text-color);
+        }
+        .location {
+          font-size: 14px;
+          color: var(--secondary-text-color);
         }
         .score-container {
           text-align: center;
@@ -125,6 +132,12 @@ class FishingAssistantCard extends HTMLElement {
           color: white;
           opacity: 0.9;
           margin-top: 4px;
+        }
+        .conditions-summary {
+          text-align: center;
+          font-size: 14px;
+          color: var(--secondary-text-color);
+          margin-bottom: 16px;
         }
         .current-conditions {
           display: grid;
@@ -162,6 +175,33 @@ class FishingAssistantCard extends HTMLElement {
           text-align: center;
           font-weight: 500;
         }
+        .safety-caution {
+          background: #ff9800;
+          color: white;
+          padding: 12px;
+          border-radius: 8px;
+          margin-bottom: 16px;
+          text-align: center;
+          font-weight: 500;
+        }
+        .best-window {
+          background: var(--secondary-background-color);
+          padding: 12px;
+          border-radius: 8px;
+          margin-bottom: 16px;
+          text-align: center;
+        }
+        .best-window-label {
+          font-size: 11px;
+          color: var(--secondary-text-color);
+          text-transform: uppercase;
+          margin-bottom: 4px;
+        }
+        .best-window-value {
+          font-size: 14px;
+          font-weight: 500;
+          color: var(--primary-text-color);
+        }
         .forecast-section {
           margin-top: 24px;
         }
@@ -180,6 +220,14 @@ class FishingAssistantCard extends HTMLElement {
           color: var(--primary-text-color);
           margin-bottom: 8px;
           padding-left: 4px;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+        }
+        .day-avg {
+          font-size: 12px;
+          color: var(--secondary-text-color);
+          font-weight: normal;
         }
         .time-blocks {
           display: grid;
@@ -205,6 +253,9 @@ class FishingAssistantCard extends HTMLElement {
         .time-block.unsafe {
           background: rgba(244, 67, 54, 0.1);
         }
+        .time-block.caution {
+          background: rgba(255, 152, 0, 0.1);
+        }
         .block-time {
           font-size: 10px;
           color: var(--secondary-text-color);
@@ -220,9 +271,8 @@ class FishingAssistantCard extends HTMLElement {
           font-size: 12px;
           margin-top: 4px;
         }
-        .block-unsafe {
+        .block-safety {
           font-size: 10px;
-          color: #f44336;
           font-weight: 500;
           margin-top: 2px;
         }
@@ -235,12 +285,19 @@ class FishingAssistantCard extends HTMLElement {
 
       <ha-card>
         <div class="header">
-          <div class="title">🎣 Fishing Assistant</div>
+          <div>
+            <div class="title">🎣 Fishing Assistant</div>
+            ${attrs.location ? `<div class="location">${attrs.location}</div>` : ''}
+          </div>
         </div>
 
         ${attrs.safety === 'unsafe' ? `
           <div class="safety-warning">
-            ⚠️ Unsafe Conditions - Not Recommended
+            🚫 Unsafe Conditions - Not Recommended
+          </div>
+        ` : attrs.safety === 'caution' ? `
+          <div class="safety-caution">
+            ⚠️ Caution - Check Conditions Carefully
           </div>
         ` : ''}
 
@@ -250,6 +307,17 @@ class FishingAssistantCard extends HTMLElement {
             <div class="score-label">${scoreLabel}</div>
           </div>
         </div>
+
+        ${attrs.conditions_summary ? `
+          <div class="conditions-summary">${attrs.conditions_summary}</div>
+        ` : ''}
+
+        ${attrs.best_window ? `
+          <div class="best-window">
+            <div class="best-window-label">Best Window</div>
+            <div class="best-window-value">${attrs.best_window}</div>
+          </div>
+        ` : ''}
 
         <div class="current-conditions">
           ${attrs.species_focus && attrs.species_focus !== 'Unknown' ? `
@@ -264,28 +332,28 @@ class FishingAssistantCard extends HTMLElement {
             <div class="condition-item">
               <div class="condition-icon">${getTideEmoji(attrs.tide_state)}</div>
               <div class="condition-label">Tide</div>
-              <div class="condition-value">${attrs.tide_state.replace('_', ' ')}</div>
+              <div class="condition-value">${attrs.tide_state.replace(/_/g, ' ')}</div>
             </div>
           ` : ''}
           
-          ${attrs.moon_phase ? `
+          ${attrs.safety ? `
             <div class="condition-item">
-              <div class="condition-icon">${getMoonEmoji(attrs.moon_phase)}</div>
+              <div class="condition-icon">${getSafetyEmoji(attrs.safety)}</div>
+              <div class="condition-label">Safety</div>
+              <div class="condition-value">${attrs.safety}</div>
+            </div>
+          ` : ''}
+          
+          ${moonScore !== null ? `
+            <div class="condition-item">
+              <div class="condition-icon">🌙</div>
               <div class="condition-label">Moon</div>
-              <div class="condition-value">${attrs.moon_phase.replace('_', ' ')}</div>
-            </div>
-          ` : ''}
-          
-          ${attrs.solunar_period ? `
-            <div class="condition-item">
-              <div class="condition-icon">⏰</div>
-              <div class="condition-label">Period</div>
-              <div class="condition-value">${attrs.solunar_period}</div>
+              <div class="condition-value">${moonScore}%</div>
             </div>
           ` : ''}
         </div>
 
-        ${attrs.forecast && attrs.forecast.length > 0 ? `
+        ${attrs.forecast ? `
           <div class="forecast-section">
             <div class="forecast-title">📅 5-Day Forecast</div>
             ${this.renderForecast(attrs.forecast)}
@@ -296,34 +364,56 @@ class FishingAssistantCard extends HTMLElement {
   }
 
   renderForecast(forecast) {
-    // Group by day
-    const days = {};
-    forecast.forEach(block => {
-      if (!days[block.day]) {
-        days[block.day] = [];
-      }
-      days[block.day].push(block);
-    });
+    // Convert nested forecast object to array
+    const days = Object.entries(forecast).map(([date, dayData]) => ({
+      date,
+      day_name: dayData.day_name,
+      daily_avg_score: dayData.daily_avg_score,
+      periods: dayData.periods
+    }));
 
-    return Object.entries(days).map(([day, blocks]) => `
-      <div class="forecast-day">
-        <div class="day-header">${day}</div>
-        <div class="time-blocks">
-          ${blocks.map(block => {
-            const scoreClass = block.score >= 70 ? 'excellent' : block.score >= 40 ? 'good' : 'poor';
-            const unsafeClass = block.safety === 'unsafe' ? 'unsafe' : '';
-            return `
-              <div class="time-block ${scoreClass} ${unsafeClass}">
-                <div class="block-time">${block.time_block}</div>
-                <div class="block-score">${block.score}</div>
-                <div class="block-tide">${block.tide_state.replace('_', ' ')}</div>
-                ${block.safety === 'unsafe' ? '<div class="block-unsafe">⚠️ Unsafe</div>' : ''}
-              </div>
-            `;
-          }).join('')}
+    const getTideEmoji = (tide) => {
+      const tideMap = {
+        'high_tide': '🌊',
+        'slack_high': '🌊',
+        'low_tide': '🏖️',
+        'slack_low': '🏖️',
+        'rising': '📈',
+        'falling': '📉'
+      };
+      return tideMap[tide] || '〰️';
+    };
+
+    return days.map(day => {
+      const periods = Object.entries(day.periods).map(([key, period]) => period);
+      const avgScore = Math.round(day.daily_avg_score * 10);
+      
+      return `
+        <div class="forecast-day">
+          <div class="day-header">
+            <span>${day.day_name}</span>
+            <span class="day-avg">Avg: ${avgScore}</span>
+          </div>
+          <div class="time-blocks">
+            ${periods.map(period => {
+              const score = Math.round(period.score * 10);
+              const scoreClass = score >= 70 ? 'excellent' : score >= 40 ? 'good' : 'poor';
+              const safetyClass = period.safety === 'unsafe' ? 'unsafe' : period.safety === 'caution' ? 'caution' : '';
+              const safetyColor = period.safety === 'unsafe' ? '#f44336' : period.safety === 'caution' ? '#ff9800' : '#4caf50';
+              
+              return `
+                <div class="time-block ${scoreClass} ${safetyClass}">
+                  <div class="block-time">${period.time_block}</div>
+                  <div class="block-score">${score}</div>
+                  <div class="block-tide">${getTideEmoji(period.tide_state)} ${period.tide_state.replace(/_/g, ' ')}</div>
+                  <div class="block-safety" style="color: ${safetyColor};">${period.safety}</div>
+                </div>
+              `;
+            }).join('')}
+          </div>
         </div>
-      </div>
-    `).join('');
+      `;
+    }).join('');
   }
 
   getCardSize() {
