@@ -62,11 +62,6 @@ Let Home Assistant tell you. 🐟
 1. Copy the `custom_components/fishing_assistant/` folder to your Home Assistant `custom_components` directory
 2. Restart Home Assistant
 
-The integration will automatically:
-- Install required dependencies
-- Register the custom Fishing Assistant card
-- Make the card available in the GUI editor
-
 ---
 
 ## 🧭 Configuration
@@ -100,21 +95,34 @@ The integration will automatically:
 
 ## 🎨 Using the Custom Card
 
-After installing the integration, the **Fishing Assistant Card** is automatically available.
+### Step 1: Add the Card Resource (One-Time Setup)
 
-### Adding to Your Dashboard:
+After installing the integration, you need to register the custom card resource:
+
+1. Go to **Settings → Dashboards**
+2. Click the **three dots menu** (top right) → **Resources**
+3. Click **+ Add Resource**
+4. Enter the following:
+   - **URL**: `/fishing_assistant_local/fishing-assistant-card.js`
+   - **Resource type**: **JavaScript Module**
+5. Click **Create**
+6. **Hard refresh your browser** (Ctrl+Shift+R or Cmd+Shift+R)
+
+> **Note**: This is a one-time setup. Once added, the resource will persist across restarts.
+
+### Step 2: Add the Card to Your Dashboard
 
 1. Edit your dashboard
 2. Click **Add Card**
 3. Search for **"Fishing Assistant Card"**
-4. Select your fishing score sensor entity
-5. Save
+4. Select your fishing score sensor entity from the dropdown
+5. Click **Save**
 
 ### Manual YAML Configuration:
 
 ```yaml
 type: custom:fishing-assistant-card
-entity: sensor.ocean_fishing_score
+entity: sensor.gibraltar_shore_fishing_score
 
 ```
 
@@ -293,10 +301,11 @@ Each time period is given a **score from 0 to 100**, where:
 
 ## 🐛 Troubleshooting
 
-### Card Not Appearing:
-1. Clear browser cache (Ctrl+F5)
-2. Restart Home Assistant
-3. Check browser console for errors
+### Card Not Appearing in Card Picker:
+1. Make sure you've added the resource (see "Using the Custom Card" section above)
+2. Hard refresh your browser (Ctrl+Shift+R or Cmd+Shift+R)
+3. Check that the resource URL is correct: /fishing_assistant_local/fishing-assistant-card.js
+4. Verify the resource type is set to "JavaScript Module"
 
 ### "Species focus" shows "Unknown":
 - This is normal if no species is configured
