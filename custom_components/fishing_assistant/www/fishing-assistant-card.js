@@ -62,16 +62,34 @@ class FishingAssistantCard extends HTMLElement {
     this.render(this._hass.states[this.config.entity]);
   }
 
-  showBlockDetails(dayDate, blockName, period) {
+  showBlockDetails(event, dayDate, blockName, period) {
+    event.stopPropagation();
     const detailsKey = `${dayDate}-${blockName}`;
     
+    // Toggle the popup
     if (this._showDetails === detailsKey) {
       this._showDetails = null;
     } else {
       this._showDetails = detailsKey;
     }
     
-    this.render(this._hass.states[this.config.entity]);
+    // Update only the popups without full re-render
+    this.updatePopups();
+  }
+
+  updatePopups() {
+    // Hide all popups first
+    this.shadowRoot.querySelectorAll('.block-details').forEach(popup => {
+      popup.style.display = 'none';
+    });
+    
+    // Show the active popup if any
+    if (this._showDetails) {
+      const activePopup = this.shadowRoot.querySelector(`[data-details-key="${this._showDetails}"]`);
+      if (activePopup) {
+        activePopup.style.display = 'block';
+      }
+    }
   }
 
   getWeatherDetails(hass, weatherEntityId) {
@@ -394,7 +412,7 @@ class FishingAssistantCard extends HTMLElement {
           border-left: 3px solid transparent;
           cursor: pointer;
           transition: transform 0.2s, box-shadow 0.2s;
-          position: static;
+          position: relative;
         }
         .time-block:hover {
           transform: translateY(-2px);
@@ -452,16 +470,23 @@ class FishingAssistantCard extends HTMLElement {
           max-width: 90vw;
           max-height: 80vh;
           overflow-y: auto;
+          display: none;
         }
-        .block-details::before {
-          content: '';
+        .block-details.active {
+          display: block;
+        }
+        .popup-backdrop {
           position: fixed;
           top: 0;
           left: 0;
           right: 0;
           bottom: 0;
           background: rgba(0, 0, 0, 0.5);
-          z-index: -1;
+          z-index: 9998;
+          display: none;
+        }
+        .popup-backdrop.active {
+          display: block;
         }
         .detail-section {
           margin-bottom: 12px;
@@ -525,6 +550,8 @@ class FishingAssistantCard extends HTMLElement {
       </style>
 
       <ha-card>
+        <div class="popup-backdrop ${this._showDetails ? 'active' : ''}"></div>
+        
         <div class="header">
           <div>
             <div class="title">🎣 Fishing Assistant</div>
@@ -658,13 +685,25 @@ class FishingAssistantCard extends HTMLElement {
     // Add event listeners for time block clicks
     this.shadowRoot.querySelectorAll('.time-block').forEach(block => {
       block.addEventListener('click', (e) => {
-        e.stopPropagation();
         const dayDate = e.currentTarget.dataset.day;
         const blockName = e.currentTarget.dataset.block;
         const periodData = JSON.parse(e.currentTarget.dataset.period);
-        this.showBlockDetails(dayDate, blockName, periodData);
+        this.showBlockDetails(e, dayDate, blockName, periodData);
       });
     });
+
+    // Add event listener for backdrop click to close popup
+    const backdrop = this.shadowRoot.querySelector('.popup-backdrop');
+    if (backdrop) {
+      backdrop.addEventListener('click', () => {
+        this._showDetails = null;
+        this.updatePopups();
+        backdrop.classList.remove('active');
+      });
+    }
+
+    // Update popup visibility after render
+    this.updatePopups();
   }
 
   findWeatherEntity() {
@@ -762,7 +801,6 @@ class FishingAssistantCard extends HTMLElement {
               const safetyClass = period.safety === 'unsafe' ? 'unsafe' : period.safety === 'caution' ? 'caution' : '';
               const safetyColor = period.safety === 'unsafe' ? '#f44336' : period.safety === 'caution' ? '#ff9800' : '#4caf50';
               const detailsKey = `${day.date}-${period.key}`;
-              const showDetails = this._showDetails === detailsKey;
               const safetyReasons = getSafetyReason(period, weatherDetails);
               
               return `
@@ -774,90 +812,88 @@ class FishingAssistantCard extends HTMLElement {
                   <div class="block-score">${score}</div>
                   <div class="block-tide">${getTideEmoji(period.tide_state)} ${period.tide_state.replace(/_/g, ' ')}</div>
                   <div class="block-safety" style="color: ${safetyColor};">${period.safety}</div>
+                </div>
+                
+                <div class="block-details" data-details-key="${detailsKey}">
+                  <div class="detail-section">
+                    <div class="detail-section-title">⚡ Conditions</div>
+                    <div class="detail-row">
+                      <span class="detail-label">Overall:</span>
+                      <span class="detail-value">${period.conditions || 'N/A'}</span>
+                    </div>
+                    <div class="detail-row">
+                      <span class="detail-label">Score:</span>
+                      <span class="detail-value">${score}/100</span>
+                    </div>
+                  </div>
                   
-                  ${showDetails ? `
-                    <div class="block-details">
-                      <div class="detail-section">
-                        <div class="detail-section-title">⚡ Conditions</div>
-                        <div class="detail-row">
-                          <span class="detail-label">Overall:</span>
-                          <span class="detail-value">${period.conditions || 'N/A'}</span>
-                        </div>
-                        <div class="detail-row">
-                          <span class="detail-label">Score:</span>
-                          <span class="detail-value">${score}/100</span>
-                        </div>
+                  <div class="detail-section">
+                    <div class="detail-section-title">🌊 Marine</div>
+                    <div class="detail-row">
+                      <span class="detail-label">Tide:</span>
+                      <span class="detail-value">${period.tide_state.replace(/_/g, ' ')}</span>
+                    </div>
+                    ${marineDetails?.wave_height ? `
+                      <div class="detail-row">
+                        <span class="detail-label">Wave Height:</span>
+                        <span class="detail-value">${parseFloat(marineDetails.wave_height).toFixed(1)}m</span>
                       </div>
-                      
-                      <div class="detail-section">
-                        <div class="detail-section-title">🌊 Marine</div>
-                        <div class="detail-row">
-                          <span class="detail-label">Tide:</span>
-                          <span class="detail-value">${period.tide_state.replace(/_/g, ' ')}</span>
-                        </div>
-                        ${marineDetails?.wave_height ? `
-                          <div class="detail-row">
-                            <span class="detail-label">Wave Height:</span>
-                            <span class="detail-value">${parseFloat(marineDetails.wave_height).toFixed(1)}m</span>
-                          </div>
-                        ` : ''}
-                        ${marineDetails?.wave_period ? `
-                          <div class="detail-row">
-                            <span class="detail-label">Wave Period:</span>
-                            <span class="detail-value">${marineDetails.wave_period}s</span>
-                          </div>
-                        ` : ''}
+                    ` : ''}
+                    ${marineDetails?.wave_period ? `
+                      <div class="detail-row">
+                        <span class="detail-label">Wave Period:</span>
+                        <span class="detail-value">${marineDetails.wave_period}s</span>
                       </div>
-                      
-                      ${weatherDetails ? `
-                        <div class="detail-section">
-                          <div class="detail-section-title">🌤️ Weather</div>
-                          ${weatherDetails.wind_speed ? `
-                            <div class="detail-row">
-                              <span class="detail-label">Wind:</span>
-                              <span class="detail-value">${Math.round(weatherDetails.wind_speed)} km/h</span>
-                            </div>
-                          ` : ''}
-                          ${weatherDetails.wind_gust ? `
-                            <div class="detail-row">
-                              <span class="detail-label">Gusts:</span>
-                              <span class="detail-value">${Math.round(weatherDetails.wind_gust)} km/h</span>
-                            </div>
-                          ` : ''}
-                          ${weatherDetails.pressure ? `
-                            <div class="detail-row">
-                              <span class="detail-label">Pressure:</span>
-                              <span class="detail-value">${Math.round(weatherDetails.pressure)} hPa</span>
-                            </div>
-                          ` : ''}
-                          ${weatherDetails.cloud_cover !== undefined ? `
-                            <div class="detail-row">
-                              <span class="detail-label">Cloud Cover:</span>
-                              <span class="detail-value">${weatherDetails.cloud_cover}%</span>
-                            </div>
-                          ` : ''}
+                    ` : ''}
+                  </div>
+                  
+                  ${weatherDetails ? `
+                    <div class="detail-section">
+                      <div class="detail-section-title">🌤️ Weather</div>
+                      ${weatherDetails.wind_speed ? `
+                        <div class="detail-row">
+                          <span class="detail-label">Wind:</span>
+                          <span class="detail-value">${Math.round(weatherDetails.wind_speed)} km/h</span>
                         </div>
                       ` : ''}
-                      
-                      ${period.safety === 'unsafe' ? `
-                        <div class="detail-warning">
-                          ⚠️ UNSAFE CONDITIONS<br>
-                          ${safetyReasons.join('<br>')}
+                      ${weatherDetails.wind_gust ? `
+                        <div class="detail-row">
+                          <span class="detail-label">Gusts:</span>
+                          <span class="detail-value">${Math.round(weatherDetails.wind_gust)} km/h</span>
                         </div>
-                      ` : period.safety === 'caution' ? `
-                        <div class="detail-warning" style="background: rgba(255, 152, 0, 0.1); color: #ff9800;">
-                          ⚠️ CAUTION<br>
-                          ${safetyReasons.join('<br>')}
+                      ` : ''}
+                      ${weatherDetails.pressure ? `
+                        <div class="detail-row">
+                          <span class="detail-label">Pressure:</span>
+                          <span class="detail-value">${Math.round(weatherDetails.pressure)} hPa</span>
                         </div>
-                      ` : `
-                        <div class="detail-good">
-                          ✅ Safe Conditions
+                      ` : ''}
+                      ${weatherDetails.cloud_cover !== undefined ? `
+                        <div class="detail-row">
+                          <span class="detail-label">Cloud Cover:</span>
+                          <span class="detail-value">${weatherDetails.cloud_cover}%</span>
                         </div>
-                      `}
-                      
-                      <div class="close-hint">Click again to close</div>
+                      ` : ''}
                     </div>
                   ` : ''}
+                  
+                  ${period.safety === 'unsafe' ? `
+                    <div class="detail-warning">
+                      ⚠️ UNSAFE CONDITIONS<br>
+                      ${safetyReasons.join('<br>')}
+                    </div>
+                  ` : period.safety === 'caution' ? `
+                    <div class="detail-warning" style="background: rgba(255, 152, 0, 0.1); color: #ff9800;">
+                      ⚠️ CAUTION<br>
+                      ${safetyReasons.join('<br>')}
+                    </div>
+                  ` : `
+                    <div class="detail-good">
+                      ✅ Safe Conditions
+                    </div>
+                  `}
+                  
+                  <div class="close-hint">Click anywhere to close</div>
                 </div>
               `;
             }).join('')}
