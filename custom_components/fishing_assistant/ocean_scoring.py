@@ -250,12 +250,24 @@ class OceanFishingScorer:
                 # Calculate score for each time block
                 for block in time_blocks:
                     # Skip past periods for today (hybrid approach)
-                    if is_today and block["end_hour"] <= current_hour:
-                        _LOGGER.debug(
-                            "Skipping past period %s (ends at %d:00, current hour is %d:00)",
-                            block["name"], block["end_hour"], current_hour
+                    # A period is "past" if current time is at or after its end time
+                    if is_today:
+                        # Create the end time for this block
+                        block_end_time = datetime.combine(
+                            target_date,
+                            datetime.min.time().replace(hour=block["end_hour"] if block["end_hour"] < 24 else 0)
                         )
-                        continue
+                        # For night period that ends at 6 AM, it's actually the next day
+                        if block["end_hour"] == 6 and block["start_hour"] == 0:
+                            block_end_time = block_end_time + timedelta(days=1)
+                        
+                        # Skip if we're past the end of this period
+                        if now >= block_end_time:
+                            _LOGGER.debug(
+                                "Skipping past period %s (ends at %s, current time is %s)",
+                                block["name"], block_end_time.strftime("%H:%M"), now.strftime("%H:%M")
+                            )
+                            continue
                     target_time = datetime.combine(
                         target_date,
                         datetime.min.time().replace(hour=block["start_hour"])
