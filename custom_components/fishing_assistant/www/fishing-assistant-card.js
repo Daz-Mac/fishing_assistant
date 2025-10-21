@@ -4,6 +4,14 @@ class FishingAssistantCard extends HTMLElement {
     this.attachShadow({ mode: 'open' });
   }
 
+  static getConfigElement() {
+    return document.createElement('fishing-assistant-card-editor');
+  }
+
+  static getStubConfig() {
+    return { entity: '' };
+  }
+
   setConfig(config) {
     if (!config.entity) {
       throw new Error('Please define an entity');
@@ -323,7 +331,63 @@ class FishingAssistantCard extends HTMLElement {
   }
 }
 
+// Visual Editor Component
+class FishingAssistantCardEditor extends HTMLElement {
+  setConfig(config) {
+    this._config = config;
+    this.render();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+  }
+
+  configChanged(newConfig) {
+    const event = new Event('config-changed', {
+      bubbles: true,
+      composed: true,
+    });
+    event.detail = { config: newConfig };
+    this.dispatchEvent(event);
+  }
+
+  render() {
+    if (!this._hass) {
+      return;
+    }
+
+    // Get all fishing assistant entities
+    const entities = Object.keys(this._hass.states).filter(
+      (eid) => eid.startsWith('sensor.') && eid.includes('fishing')
+    );
+
+    this.innerHTML = `
+      <div style="padding: 16px;">
+        <ha-entity-picker
+          label="Fishing Score Entity"
+          .hass="${this._hass}"
+          .value="${this._config.entity || ''}"
+          .includeDomains="${['sensor']}"
+          allow-custom-entity
+        ></ha-entity-picker>
+      </div>
+    `;
+
+    const picker = this.querySelector('ha-entity-picker');
+    picker.addEventListener('value-changed', (ev) => {
+      if (!this._config || !this._hass) {
+        return;
+      }
+      if (ev.detail.value) {
+        this._config = { ...this._config, entity: ev.detail.value };
+        this.configChanged(this._config);
+      }
+    });
+  }
+}
+
 customElements.define('fishing-assistant-card', FishingAssistantCard);
+customElements.define('fishing-assistant-card-editor', FishingAssistantCardEditor);
 
 window.customCards = window.customCards || [];
 window.customCards.push({
