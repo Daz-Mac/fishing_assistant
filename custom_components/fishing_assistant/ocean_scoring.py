@@ -1,7 +1,7 @@
 """Ocean fishing scoring algorithm."""
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Tuple
 
 from .const import (
     CONF_SPECIES_ID,
@@ -148,11 +148,12 @@ class OceanFishingScorer:
         final_score = round(total_score * 10, 1)
         
         # Check safety
-        safety_status = self._check_safety(weather_data, marine_data)
+        safety_status, safety_reasons = self._check_safety(weather_data, marine_data)
 
         return {
             "score": final_score,
             "safety": safety_status,
+            "safety_reasons": safety_reasons,
             "tide_state": tide_state,
             "best_window": self._determine_best_window(astro_data, tide_data),
             "conditions_summary": self._generate_summary(scores, final_score),
@@ -275,6 +276,7 @@ class OceanFishingScorer:
                         "hours": f"{block['start_hour']:02d}:00-{block['end_hour']:02d}:00",
                         "score": result["score"],
                         "safety": result["safety"],
+                        "safety_reasons": result.get("safety_reasons", []),
                         "tide_state": result["tide_state"],
                         "conditions": result["conditions_summary"],
                     }
@@ -420,25 +422,67 @@ class OceanFishingScorer:
         else:
             return LIGHT_NIGHT
 
-    def _check_safety(self, weather_data: Dict, marine_data: Dict) -> str:
-        """Check if conditions are safe for fishing."""
+    def _check_safety(self, weather_data: Dict, marine_data: Dict) -> Tuple[str, List[str]]:
+        """Check if conditions are safe for fishing.
+        
+        Returns:
+            tuple: (safety_status, list of reasons)
+        """
         habitat_preset = self.config.get(CONF_HABITAT_PRESET, "rocky_point")
         habitat = HABITAT_PRESETS.get(habitat_preset, HABITAT_PRESETS["rocky_point"])
         
         wind_speed = weather_data.get("wind_speed", 0)
         wind_gust = weather_data.get("wind_gust", wind_speed)
         wave_height = marine_data.get("current", {}).get("wave_height", 0)
+        precipitation = weather_data.get("precipitation_probability", 0)
         
         max_wind = habitat.get("max_wind_speed", 30)
         max_gust = habitat.get("max_gust_speed", 45)
         max_wave = habitat.get("max_wave_height", 2.5)
         
-        if wind_speed > max_wind or wind_gust > max_gust or wave_height > max_wave:
-            return "unsafe"
-        elif wind_speed > max_wind * 0.8 or wind_gust > max_gust * 0.8 or wave_height > max_wave * 0.8:
-            return "caution"
+        reasons = []
+        unsafe_count = 0
+        caution_count = 0
+        
+        # Check wind speed
+        if wind_speed > max_wind:
+            reasons.append(f"High wind: {round(wind_speed)} km/h (max: {max_wind})")
+            unsafe_count += 1
+        elif wind_speed > max_wind * 0.8:
+            reasons.append(f"Strong wind: {round(wind_speed)} km/h (caution at {round(max_wind * 0.8)})")
+            caution_count += 1
+        
+        # Check wind gusts
+        if wind_gust > max_gust:
+            reasons.append(f"Dangerous gusts: {round(wind_gust)} km/h (max: {max_gust})")
+            unsafe_count += 1
+        elif wind_gust > max_gust * 0.8:
+            reasons.append(f"Strong gusts: {round(wind_gust)} km/h (caution at {round(max_gust * 0.8)})")
+            caution_count += 1
+        
+        # Check wave height
+        if wave_height > max_wave:
+            reasons.append(f"High waves: {round(wave_height, 1)}m (max: {max_wave}m)")
+            unsafe_count += 1
+        elif wave_height > max_wave * 0.8:
+            reasons.append(f"Large waves: {round(wave_height, 1)}m (caution at {round(max_wave * 0.8, 1)}m)")
+            caution_count += 1
+        
+        # Check precipitation
+        if precipitation > 70:
+            reasons.append(f"Heavy rain likely: {precipitation}%")
+            caution_count += 1
+        elif precipitation > 50:
+            reasons.append(f"Rain likely: {precipitation}%")
+            caution_count += 1
+        
+        # Determine overall safety status
+        if unsafe_count > 0:
+            return "unsafe", reasons
+        elif caution_count > 0:
+            return "caution", reasons
         else:
-            return "safe"
+            return "safe", ["Conditions within safe limits"]
 
     def _determine_best_window(self, astro_data: Dict, tide_data: Dict) -> str:
         """Determine the best fishing window."""
