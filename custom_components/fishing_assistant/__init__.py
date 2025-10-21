@@ -48,14 +48,16 @@ async def _register_custom_card(hass: HomeAssistant) -> None:
     hass.data[DOMAIN]["fishing_assistant_card_registered"] = True
     
     # Register the card resource
-    card_path = Path(__file__).parent / "www" / "fishing-assistant-card.js"
-    card_url = f"/fishing_assistant_local/fishing-assistant-card.js"
+    card_dir = Path(__file__).parent / "www"
+    card_url = "/fishing_assistant_local"
     
-    # Register the static path
-    hass.http.register_static_path(
-        "/fishing_assistant_local",
-        str(Path(__file__).parent / "www"),
-        cache_headers=False
-    )
+    # Register the static path using the correct method
+    await hass.http.async_register_static_paths([
+        {
+            "url_path": card_url,
+            "path": str(card_dir),
+            "cache_headers": False
+        }
+    ])
     
-    _LOGGER.info("Registered Fishing Assistant card at %s", card_url)
+    _LOGGER.info("Registered Fishing Assistant card at %s/fishing-assistant-card.js", card_url)
