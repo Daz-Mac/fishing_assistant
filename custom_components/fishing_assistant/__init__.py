@@ -4,7 +4,6 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers import config_validation as cv
 from homeassistant.core import HomeAssistant
 from homeassistant.components.http import StaticPathConfig
-from homeassistant.components.frontend import async_register_built_in_panel
 from homeassistant.components.lovelace.resources import ResourceStorageCollection
 from .const import DOMAIN
 
@@ -53,12 +52,10 @@ async def _register_custom_card(hass: HomeAssistant) -> None:
     card_dir = Path(__file__).parent / "www"
     card_url = "/fishing_assistant_local"
     
-    # Register the static path synchronously
-    hass.http.register_static_path(
-        card_url,
-        str(card_dir),
-        cache_headers=False
-    )
+    # Register the static path using async method with keyword arguments
+    await hass.http.async_register_static_paths([
+        StaticPathConfig(url_path=card_url, path=str(card_dir), cache_headers=False)
+    ])
     
     # Auto-register the resource in Lovelace
     resource_url = f"{card_url}/fishing-assistant-card.js"
