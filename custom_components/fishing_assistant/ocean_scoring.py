@@ -176,7 +176,12 @@ class OceanFishingScorer:
         marine_data: Dict,
         days: int = 5,
     ) -> Dict:
-        """Calculate fishing score forecast for the next N days."""
+        """Calculate fishing score forecast for the next N days.
+        
+        Uses a hybrid approach:
+        - For today: Only shows remaining periods (skips past periods)
+        - For future days: Shows all 4 periods (morning, afternoon, evening, night)
+        """
         forecast = {}
         
         try:
@@ -220,10 +225,15 @@ class OceanFishingScorer:
                 {"name": "night", "start_hour": 0, "end_hour": 6},
             ]
             
+            # Get current time for filtering past periods
+            now = datetime.now()
+            current_hour = now.hour
+            
             # Process each day
             for day_offset in range(days):
                 target_date = datetime.now().date() + timedelta(days=day_offset)
                 date_key = target_date.isoformat()
+                is_today = (day_offset == 0)
                 
                 forecast[date_key] = {
                     "date": date_key,
@@ -239,6 +249,13 @@ class OceanFishingScorer:
                 
                 # Calculate score for each time block
                 for block in time_blocks:
+                    # Skip past periods for today (hybrid approach)
+                    if is_today and block["end_hour"] <= current_hour:
+                        _LOGGER.debug(
+                            "Skipping past period %s (ends at %d:00, current hour is %d:00)",
+                            block["name"], block["end_hour"], current_hour
+                        )
+                        continue
                     target_time = datetime.combine(
                         target_date,
                         datetime.min.time().replace(hour=block["start_hour"])
@@ -287,21 +304,27 @@ class OceanFishingScorer:
                         "conditions": result["conditions_summary"],
                     }
                 
-                # Calculate daily average score
-                period_scores = [
-                    p["score"] for p in forecast[date_key]["periods"].values()
-                ]
-                forecast[date_key]["daily_avg_score"] = round(
-                    sum(period_scores) / len(period_scores), 1
-                )
-                
-                # Find best period of the day
-                best_period = max(
-                    forecast[date_key]["periods"].items(),
-                    key=lambda x: x[1]["score"]
-                )
-                forecast[date_key]["best_period"] = best_period[0]
-                forecast[date_key]["best_score"] = best_period[1]["score"]
+                # Calculate daily average score (only if we have periods)
+                if forecast[date_key]["periods"]:
+                    period_scores = [
+                        p["score"] for p in forecast[date_key]["periods"].values()
+                    ]
+                    forecast[date_key]["daily_avg_score"] = round(
+                        sum(period_scores) / len(period_scores), 1
+                    )
+                    
+                    # Find best period of the day
+                    best_period = max(
+                        forecast[date_key]["periods"].items(),
+                        key=lambda x: x[1]["score"]
+                    )
+                    forecast[date_key]["best_period"] = best_period[0]
+                    forecast[date_key]["best_score"] = best_period[1]["score"]
+                else:
+                    # No periods available (all past for today)
+                    forecast[date_key]["daily_avg_score"] = 0
+                    forecast[date_key]["best_period"] = None
+                    forecast[date_key]["best_score"] = 0
         
         except Exception as e:
             _LOGGER.error("Error calculating forecast: %s", e, exc_info=True)
