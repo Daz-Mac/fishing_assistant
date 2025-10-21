@@ -149,6 +149,12 @@ class OceanFishingScorer:
         
         # Check safety
         safety_status, safety_reasons = self._check_safety(weather_data, marine_data)
+        
+        # Apply hard cap based on safety status
+        if safety_status == "unsafe":
+            final_score = min(final_score, 3.0)  # Cap at 30/100 (Poor)
+        elif safety_status == "caution":
+            final_score = min(final_score, 6.0)  # Cap at 60/100 (Good)
 
         return {
             "score": final_score,
