@@ -3,7 +3,8 @@ from pathlib import Path
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers import config_validation as cv
 from homeassistant.core import HomeAssistant
-from homeassistant.components.http import StaticPathConfig
+from homeassistant.components.frontend import add_extra_js_url
+from homeassistant.components.lovelace import _register_panel
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -48,13 +49,10 @@ async def _register_custom_card(hass: HomeAssistant) -> None:
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN]["fishing_assistant_card_registered"] = True
     
-    # Register the card resource
-    card_dir = Path(__file__).parent / "www"
-    card_url = "/fishing_assistant_local"
+    # Register the card resource URL
+    card_url = "/fishing_assistant_local/fishing-assistant-card.js"
     
-    # Register the static path using StaticPathConfig with keyword arguments
-    await hass.http.async_register_static_paths([
-        StaticPathConfig(url_path=card_url, path=str(card_dir), cache_headers=False)
-    ])
+    # Add the JS URL to frontend
+    add_extra_js_url(hass, card_url)
     
-    _LOGGER.info("Registered Fishing Assistant card at %s/fishing-assistant-card.js", card_url)
+    _LOGGER.info("Registered Fishing Assistant card at %s", card_url)
