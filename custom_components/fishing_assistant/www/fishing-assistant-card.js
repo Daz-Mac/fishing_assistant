@@ -2,6 +2,8 @@ class FishingAssistantCard extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
+    this._expandedDays = new Set();
+    this._showDetails = null; // Track which time block details are shown
   }
 
   static getConfigElement() {
@@ -9,14 +11,30 @@ class FishingAssistantCard extends HTMLElement {
   }
 
   static getStubConfig() {
-    return { entity: '' };
+    return { 
+      entity: '',
+      show_forecast: true,
+      show_current_conditions: true,
+      compact_mode: false,
+      forecast_days: 5,
+      expand_forecast: false,
+      show_component_scores: true
+    };
   }
 
   setConfig(config) {
     if (!config.entity) {
       throw new Error('Please define an entity');
     }
-    this.config = config;
+    this.config = {
+      show_forecast: true,
+      show_current_conditions: true,
+      compact_mode: false,
+      forecast_days: 5,
+      expand_forecast: false,
+      show_component_scores: true,
+      ...config
+    };
   }
 
   set hass(hass) {
@@ -35,12 +53,69 @@ class FishingAssistantCard extends HTMLElement {
     this.render(entity);
   }
 
+  toggleDay(date) {
+    if (this._expandedDays.has(date)) {
+      this._expandedDays.delete(date);
+    } else {
+      this._expandedDays.add(date);
+    }
+    this.render(this._hass.states[this.config.entity]);
+  }
+
+  showBlockDetails(dayDate, blockName, period) {
+    const detailsKey = `${dayDate}-${blockName}`;
+    
+    if (this._showDetails === detailsKey) {
+      this._showDetails = null;
+    } else {
+      this._showDetails = detailsKey;
+    }
+    
+    this.render(this._hass.states[this.config.entity]);
+  }
+
+  getWeatherDetails(hass, weatherEntityId) {
+    if (!weatherEntityId) return null;
+    const weatherState = hass.states[weatherEntityId];
+    if (!weatherState) return null;
+    
+    return {
+      wind_speed: weatherState.attributes.wind_speed,
+      wind_gust: weatherState.attributes.wind_gust_speed || weatherState.attributes.wind_speed,
+      pressure: weatherState.attributes.pressure,
+      cloud_cover: weatherState.attributes.cloud_coverage,
+      precipitation: weatherState.attributes.precipitation_probability,
+      temperature: weatherState.attributes.temperature,
+    };
+  }
+
+  getMarineDetails(hass, locationName) {
+    // Try to find wave height and tide sensors
+    const waveHeightEntity = hass.states[`sensor.${locationName.toLowerCase().replace(' ', '_')}_wave_height`];
+    const wavePeriodEntity = hass.states[`sensor.${locationName.toLowerCase().replace(' ', '_')}_wave_period`];
+    const tideStateEntity = hass.states[`sensor.${locationName.toLowerCase().replace(' ', '_')}_tide_state`];
+    const tideStrengthEntity = hass.states[`sensor.${locationName.toLowerCase().replace(' ', '_')}_tide_strength`];
+    
+    return {
+      wave_height: waveHeightEntity?.state,
+      wave_period: wavePeriodEntity?.state,
+      tide_state: tideStateEntity?.state,
+      tide_strength: tideStrengthEntity?.state,
+    };
+  }
+
   render(entity) {
     const attrs = entity.attributes;
+    const config = this.config;
     
     // Convert score from 0-10 to 0-100 scale
     const rawScore = parseFloat(entity.state);
     const score = Math.round(rawScore * 10);
+    
+    // Get weather and marine details
+    const weatherEntityId = this.findWeatherEntity();
+    const weatherDetails = this.getWeatherDetails(this._hass, weatherEntityId);
+    const marineDetails = this.getMarineDetails(this._hass, attrs.location);
     
     // Determine score color
     const getScoreColor = (score) => {
@@ -81,8 +156,9 @@ class FishingAssistantCard extends HTMLElement {
     const scoreColor = getScoreColor(score);
     const scoreLabel = getScoreLabel(score);
 
-    // Get moon score as percentage
-    const moonScore = attrs.component_scores?.moon ? Math.round(attrs.component_scores.moon * 100) : null;
+    // Get component scores
+    const componentScores = attrs.breakdown?.component_scores || {};
+    const weights = attrs.breakdown?.weights || {};
 
     this.shadowRoot.innerHTML = `
       <style>
@@ -94,10 +170,10 @@ class FishingAssistantCard extends HTMLElement {
           display: flex;
           align-items: center;
           justify-content: space-between;
-          margin-bottom: 20px;
+          margin-bottom: ${config.compact_mode ? '12px' : '20px'};
         }
         .title {
-          font-size: 24px;
+          font-size: ${config.compact_mode ? '20px' : '24px'};
           font-weight: 500;
           color: var(--primary-text-color);
         }
@@ -107,11 +183,11 @@ class FishingAssistantCard extends HTMLElement {
         }
         .score-container {
           text-align: center;
-          margin-bottom: 24px;
+          margin-bottom: ${config.compact_mode ? '16px' : '24px'};
         }
         .score-circle {
-          width: 120px;
-          height: 120px;
+          width: ${config.compact_mode ? '100px' : '120px'};
+          height: ${config.compact_mode ? '100px' : '120px'};
           border-radius: 50%;
           background: ${scoreColor};
           display: flex;
@@ -122,7 +198,7 @@ class FishingAssistantCard extends HTMLElement {
           box-shadow: 0 4px 12px rgba(0,0,0,0.15);
         }
         .score-value {
-          font-size: 48px;
+          font-size: ${config.compact_mode ? '40px' : '48px'};
           font-weight: bold;
           color: white;
           line-height: 1;
@@ -202,37 +278,112 @@ class FishingAssistantCard extends HTMLElement {
           font-weight: 500;
           color: var(--primary-text-color);
         }
+        .component-scores {
+          margin-bottom: 24px;
+        }
+        .component-scores-title {
+          font-size: 14px;
+          font-weight: 500;
+          margin-bottom: 12px;
+          color: var(--primary-text-color);
+        }
+        .score-bar-container {
+          margin-bottom: 12px;
+        }
+        .score-bar-header {
+          display: flex;
+          justify-content: space-between;
+          margin-bottom: 4px;
+          font-size: 12px;
+        }
+        .score-bar-label {
+          color: var(--secondary-text-color);
+          text-transform: capitalize;
+        }
+        .score-bar-value {
+          color: var(--primary-text-color);
+          font-weight: 500;
+        }
+        .score-bar-track {
+          height: 8px;
+          background: var(--divider-color);
+          border-radius: 4px;
+          overflow: hidden;
+        }
+        .score-bar-fill {
+          height: 100%;
+          background: linear-gradient(90deg, #f44336 0%, #ff9800 50%, #4caf50 100%);
+          transition: width 0.3s;
+        }
         .forecast-section {
           margin-top: 24px;
+        }
+        .forecast-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 16px;
+          cursor: pointer;
+          user-select: none;
         }
         .forecast-title {
           font-size: 18px;
           font-weight: 500;
-          margin-bottom: 16px;
           color: var(--primary-text-color);
         }
+        .forecast-toggle {
+          font-size: 12px;
+          color: var(--secondary-text-color);
+          padding: 4px 8px;
+          background: var(--secondary-background-color);
+          border-radius: 4px;
+        }
         .forecast-day {
-          margin-bottom: 16px;
+          margin-bottom: 12px;
+          border: 1px solid var(--divider-color);
+          border-radius: 8px;
+          overflow: hidden;
         }
         .day-header {
           font-size: 14px;
           font-weight: 500;
           color: var(--primary-text-color);
-          margin-bottom: 8px;
-          padding-left: 4px;
+          padding: 12px;
+          background: var(--secondary-background-color);
           display: flex;
           justify-content: space-between;
           align-items: center;
+          cursor: pointer;
+          user-select: none;
+        }
+        .day-header:hover {
+          background: var(--divider-color);
+        }
+        .day-info {
+          display: flex;
+          align-items: center;
+          gap: 8px;
         }
         .day-avg {
           font-size: 12px;
           color: var(--secondary-text-color);
           font-weight: normal;
         }
+        .expand-icon {
+          transition: transform 0.3s;
+        }
+        .expand-icon.expanded {
+          transform: rotate(180deg);
+        }
         .time-blocks {
           display: grid;
           grid-template-columns: repeat(4, 1fr);
           gap: 8px;
+          padding: 12px;
+          background: var(--card-background-color);
+        }
+        .time-blocks.collapsed {
+          display: none;
         }
         .time-block {
           background: var(--secondary-background-color);
@@ -240,6 +391,13 @@ class FishingAssistantCard extends HTMLElement {
           border-radius: 6px;
           text-align: center;
           border-left: 3px solid transparent;
+          cursor: pointer;
+          transition: transform 0.2s, box-shadow 0.2s;
+          position: relative;
+        }
+        .time-block:hover {
+          transform: translateY(-2px);
+          box-shadow: 0 2px 8px rgba(0,0,0,0.1);
         }
         .time-block.excellent {
           border-left-color: #4caf50;
@@ -276,9 +434,87 @@ class FishingAssistantCard extends HTMLElement {
           font-weight: 500;
           margin-top: 2px;
         }
+        .block-details {
+          position: absolute;
+          top: 100%;
+          left: 50%;
+          transform: translateX(-50%);
+          margin-top: 8px;
+          padding: 12px;
+          background: var(--card-background-color);
+          border-radius: 6px;
+          border: 2px solid var(--primary-color);
+          box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+          font-size: 12px;
+          text-align: left;
+          z-index: 100;
+          min-width: 250px;
+          max-width: 300px;
+        }
+        .detail-section {
+          margin-bottom: 12px;
+        }
+        .detail-section:last-child {
+          margin-bottom: 0;
+        }
+        .detail-section-title {
+          font-size: 11px;
+          font-weight: 600;
+          color: var(--primary-color);
+          text-transform: uppercase;
+          margin-bottom: 6px;
+          border-bottom: 1px solid var(--divider-color);
+          padding-bottom: 2px;
+        }
+        .detail-row {
+          display: flex;
+          justify-content: space-between;
+          padding: 3px 0;
+        }
+        .detail-label {
+          color: var(--secondary-text-color);
+          font-size: 11px;
+        }
+        .detail-value {
+          color: var(--primary-text-color);
+          font-weight: 500;
+          font-size: 11px;
+        }
+        .detail-warning {
+          color: #f44336;
+          font-weight: 600;
+          background: rgba(244, 67, 54, 0.1);
+          padding: 6px;
+          border-radius: 4px;
+          margin-top: 6px;
+          text-align: center;
+        }
+        .detail-good {
+          color: #4caf50;
+          font-weight: 600;
+          background: rgba(76, 175, 80, 0.1);
+          padding: 6px;
+          border-radius: 4px;
+          margin-top: 6px;
+          text-align: center;
+        }
+        .close-hint {
+          margin-top: 8px;
+          font-size: 10px;
+          color: var(--secondary-text-color);
+          text-align: center;
+          font-style: italic;
+        }
         @media (max-width: 600px) {
           .time-blocks {
             grid-template-columns: repeat(2, 1fr);
+          }
+          .block-details {
+            position: fixed;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            max-width: 90vw;
           }
         }
       </style>
@@ -319,58 +555,150 @@ class FishingAssistantCard extends HTMLElement {
           </div>
         ` : ''}
 
-        <div class="current-conditions">
-          ${attrs.species_focus && attrs.species_focus !== 'Unknown' ? `
-            <div class="condition-item">
-              <div class="condition-icon">🐟</div>
-              <div class="condition-label">Species</div>
-              <div class="condition-value">${attrs.species_focus}</div>
-            </div>
-          ` : ''}
-          
-          ${attrs.tide_state ? `
-            <div class="condition-item">
-              <div class="condition-icon">${getTideEmoji(attrs.tide_state)}</div>
-              <div class="condition-label">Tide</div>
-              <div class="condition-value">${attrs.tide_state.replace(/_/g, ' ')}</div>
-            </div>
-          ` : ''}
-          
-          ${attrs.safety ? `
-            <div class="condition-item">
-              <div class="condition-icon">${getSafetyEmoji(attrs.safety)}</div>
-              <div class="condition-label">Safety</div>
-              <div class="condition-value">${attrs.safety}</div>
-            </div>
-          ` : ''}
-          
-          ${moonScore !== null ? `
-            <div class="condition-item">
-              <div class="condition-icon">🌙</div>
-              <div class="condition-label">Moon</div>
-              <div class="condition-value">${moonScore}%</div>
-            </div>
-          ` : ''}
-        </div>
+        ${config.show_current_conditions ? `
+          <div class="current-conditions">
+            ${attrs.species_focus && attrs.species_focus !== 'Unknown' ? `
+              <div class="condition-item">
+                <div class="condition-icon">🐟</div>
+                <div class="condition-label">Species</div>
+                <div class="condition-value">${attrs.species_focus}</div>
+              </div>
+            ` : ''}
+            
+            ${attrs.tide_state ? `
+              <div class="condition-item">
+                <div class="condition-icon">${getTideEmoji(attrs.tide_state)}</div>
+                <div class="condition-label">Tide</div>
+                <div class="condition-value">${attrs.tide_state.replace(/_/g, ' ')}</div>
+              </div>
+            ` : ''}
+            
+            ${attrs.safety ? `
+              <div class="condition-item">
+                <div class="condition-icon">${getSafetyEmoji(attrs.safety)}</div>
+                <div class="condition-label">Safety</div>
+                <div class="condition-value">${attrs.safety}</div>
+              </div>
+            ` : ''}
+            
+            ${weatherDetails?.wind_speed ? `
+              <div class="condition-item">
+                <div class="condition-icon">💨</div>
+                <div class="condition-label">Wind</div>
+                <div class="condition-value">${Math.round(weatherDetails.wind_speed)} km/h</div>
+              </div>
+            ` : ''}
+            
+            ${marineDetails?.wave_height ? `
+              <div class="condition-item">
+                <div class="condition-icon">🌊</div>
+                <div class="condition-label">Waves</div>
+                <div class="condition-value">${parseFloat(marineDetails.wave_height).toFixed(1)}m</div>
+              </div>
+            ` : ''}
+            
+            ${weatherDetails?.pressure ? `
+              <div class="condition-item">
+                <div class="condition-icon">🌡️</div>
+                <div class="condition-label">Pressure</div>
+                <div class="condition-value">${Math.round(weatherDetails.pressure)} hPa</div>
+              </div>
+            ` : ''}
+          </div>
+        ` : ''}
 
-        ${attrs.forecast ? `
+        ${config.show_component_scores && Object.keys(componentScores).length > 0 ? `
+          <div class="component-scores">
+            <div class="component-scores-title">📊 Score Breakdown</div>
+            ${Object.entries(componentScores).map(([key, value]) => {
+              const percentage = Math.round(value * 100);
+              const weight = weights[key] ? Math.round(weights[key] * 100) : 0;
+              return `
+                <div class="score-bar-container">
+                  <div class="score-bar-header">
+                    <span class="score-bar-label">${key} ${weight > 0 ? `(${weight}%)` : ''}</span>
+                    <span class="score-bar-value">${percentage}%</span>
+                  </div>
+                  <div class="score-bar-track">
+                    <div class="score-bar-fill" style="width: ${percentage}%"></div>
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        ` : ''}
+
+        ${config.show_forecast && attrs.forecast ? `
           <div class="forecast-section">
-            <div class="forecast-title">📅 5-Day Forecast</div>
-            ${this.renderForecast(attrs.forecast)}
+            <div class="forecast-header" onclick="this.getRootNode().host.toggleAllDays()">
+              <div class="forecast-title">📅 ${config.forecast_days}-Day Forecast</div>
+              <div class="forecast-toggle">
+                ${this._expandedDays.size > 0 ? 'Collapse All' : 'Expand All'}
+              </div>
+            </div>
+            ${this.renderForecast(attrs.forecast, config.forecast_days, weatherDetails, marineDetails)}
           </div>
         ` : ''}
       </ha-card>
     `;
+
+    // Add event listeners for day toggles
+    this.shadowRoot.querySelectorAll('.day-header').forEach(header => {
+      header.addEventListener('click', (e) => {
+        const date = e.currentTarget.dataset.date;
+        this.toggleDay(date);
+      });
+    });
+
+    // Add event listeners for time block clicks
+    this.shadowRoot.querySelectorAll('.time-block').forEach(block => {
+      block.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const dayDate = e.currentTarget.dataset.day;
+        const blockName = e.currentTarget.dataset.block;
+        const periodData = JSON.parse(e.currentTarget.dataset.period);
+        this.showBlockDetails(dayDate, blockName, periodData);
+      });
+    });
   }
 
-  renderForecast(forecast) {
+  findWeatherEntity() {
+    // Try to find the weather entity from the main sensor's config
+    const entity = this._hass.states[this.config.entity];
+    if (!entity) return null;
+    
+    // Look for weather entity in related sensors
+    const locationName = entity.attributes.location?.toLowerCase().replace(' ', '_');
+    const possibleWeatherEntities = Object.keys(this._hass.states).filter(eid => 
+      eid.startsWith('weather.') && eid.includes(locationName)
+    );
+    
+    return possibleWeatherEntities[0] || null;
+  }
+
+  toggleAllDays() {
+    const entity = this._hass.states[this.config.entity];
+    const forecast = entity.attributes.forecast;
+    
+    if (this._expandedDays.size > 0) {
+      this._expandedDays.clear();
+    } else {
+      Object.keys(forecast).forEach(date => this._expandedDays.add(date));
+    }
+    
+    this.render(entity);
+  }
+
+  renderForecast(forecast, maxDays = 5, weatherDetails, marineDetails) {
     // Convert nested forecast object to array
-    const days = Object.entries(forecast).map(([date, dayData]) => ({
-      date,
-      day_name: dayData.day_name,
-      daily_avg_score: dayData.daily_avg_score,
-      periods: dayData.periods
-    }));
+    const days = Object.entries(forecast)
+      .slice(0, maxDays)
+      .map(([date, dayData]) => ({
+        date,
+        day_name: dayData.day_name,
+        daily_avg_score: dayData.daily_avg_score,
+        periods: dayData.periods
+      }));
 
     const getTideEmoji = (tide) => {
       const tideMap = {
@@ -384,29 +712,147 @@ class FishingAssistantCard extends HTMLElement {
       return tideMap[tide] || '〰️';
     };
 
+    const getSafetyReason = (period, weatherDetails) => {
+      const reasons = [];
+      
+      // Check wind
+      if (weatherDetails?.wind_speed > 30) {
+        reasons.push(`High wind: ${Math.round(weatherDetails.wind_speed)} km/h`);
+      }
+      if (weatherDetails?.wind_gust > 45) {
+        reasons.push(`Strong gusts: ${Math.round(weatherDetails.wind_gust)} km/h`);
+      }
+      
+      // Check waves
+      if (marineDetails?.wave_height > 2.5) {
+        reasons.push(`High waves: ${parseFloat(marineDetails.wave_height).toFixed(1)}m`);
+      }
+      
+      // Check precipitation
+      if (weatherDetails?.precipitation > 70) {
+        reasons.push(`Heavy rain likely: ${weatherDetails.precipitation}%`);
+      }
+      
+      return reasons.length > 0 ? reasons : ['Check local conditions'];
+    };
+
     return days.map(day => {
-      const periods = Object.entries(day.periods).map(([key, period]) => period);
+      const periods = Object.entries(day.periods).map(([key, period]) => ({ ...period, key }));
       const avgScore = Math.round(day.daily_avg_score * 10);
+      const isExpanded = this._expandedDays.has(day.date) || this.config.expand_forecast;
       
       return `
         <div class="forecast-day">
-          <div class="day-header">
-            <span>${day.day_name}</span>
-            <span class="day-avg">Avg: ${avgScore}</span>
+          <div class="day-header" data-date="${day.date}">
+            <div class="day-info">
+              <span>${day.day_name}</span>
+              <span class="day-avg">Avg: ${avgScore}</span>
+            </div>
+            <span class="expand-icon ${isExpanded ? 'expanded' : ''}">▼</span>
           </div>
-          <div class="time-blocks">
+          <div class="time-blocks ${isExpanded ? '' : 'collapsed'}">
             ${periods.map(period => {
               const score = Math.round(period.score * 10);
               const scoreClass = score >= 70 ? 'excellent' : score >= 40 ? 'good' : 'poor';
               const safetyClass = period.safety === 'unsafe' ? 'unsafe' : period.safety === 'caution' ? 'caution' : '';
               const safetyColor = period.safety === 'unsafe' ? '#f44336' : period.safety === 'caution' ? '#ff9800' : '#4caf50';
+              const detailsKey = `${day.date}-${period.key}`;
+              const showDetails = this._showDetails === detailsKey;
+              const safetyReasons = getSafetyReason(period, weatherDetails);
               
               return `
-                <div class="time-block ${scoreClass} ${safetyClass}">
+                <div class="time-block ${scoreClass} ${safetyClass}" 
+                     data-day="${day.date}" 
+                     data-block="${period.key}"
+                     data-period='${JSON.stringify(period)}'>
                   <div class="block-time">${period.time_block}</div>
                   <div class="block-score">${score}</div>
                   <div class="block-tide">${getTideEmoji(period.tide_state)} ${period.tide_state.replace(/_/g, ' ')}</div>
                   <div class="block-safety" style="color: ${safetyColor};">${period.safety}</div>
+                  
+                  ${showDetails ? `
+                    <div class="block-details">
+                      <div class="detail-section">
+                        <div class="detail-section-title">⚡ Conditions</div>
+                        <div class="detail-row">
+                          <span class="detail-label">Overall:</span>
+                          <span class="detail-value">${period.conditions || 'N/A'}</span>
+                        </div>
+                        <div class="detail-row">
+                          <span class="detail-label">Score:</span>
+                          <span class="detail-value">${score}/100</span>
+                        </div>
+                      </div>
+                      
+                      <div class="detail-section">
+                        <div class="detail-section-title">🌊 Marine</div>
+                        <div class="detail-row">
+                          <span class="detail-label">Tide:</span>
+                          <span class="detail-value">${period.tide_state.replace(/_/g, ' ')}</span>
+                        </div>
+                        ${marineDetails?.wave_height ? `
+                          <div class="detail-row">
+                            <span class="detail-label">Wave Height:</span>
+                            <span class="detail-value">${parseFloat(marineDetails.wave_height).toFixed(1)}m</span>
+                          </div>
+                        ` : ''}
+                        ${marineDetails?.wave_period ? `
+                          <div class="detail-row">
+                            <span class="detail-label">Wave Period:</span>
+                            <span class="detail-value">${marineDetails.wave_period}s</span>
+                          </div>
+                        ` : ''}
+                      </div>
+                      
+                      ${weatherDetails ? `
+                        <div class="detail-section">
+                          <div class="detail-section-title">🌤️ Weather</div>
+                          ${weatherDetails.wind_speed ? `
+                            <div class="detail-row">
+                              <span class="detail-label">Wind:</span>
+                              <span class="detail-value">${Math.round(weatherDetails.wind_speed)} km/h</span>
+                            </div>
+                          ` : ''}
+                          ${weatherDetails.wind_gust ? `
+                            <div class="detail-row">
+                              <span class="detail-label">Gusts:</span>
+                              <span class="detail-value">${Math.round(weatherDetails.wind_gust)} km/h</span>
+                            </div>
+                          ` : ''}
+                          ${weatherDetails.pressure ? `
+                            <div class="detail-row">
+                              <span class="detail-label">Pressure:</span>
+                              <span class="detail-value">${Math.round(weatherDetails.pressure)} hPa</span>
+                            </div>
+                          ` : ''}
+                          ${weatherDetails.cloud_cover !== undefined ? `
+                            <div class="detail-row">
+                              <span class="detail-label">Cloud Cover:</span>
+                              <span class="detail-value">${weatherDetails.cloud_cover}%</span>
+                            </div>
+                          ` : ''}
+                        </div>
+                      ` : ''}
+                      
+                      ${period.safety === 'unsafe' ? `
+                        <div class="detail-warning">
+                          ⚠️ UNSAFE CONDITIONS<br>
+                          ${safetyReasons.join('<br>')}
+                        </div>
+                      ` : period.safety === 'caution' ? `
+                        <div class="detail-warning" style="background: rgba(255, 152, 0, 0.1); color: #ff9800;">
+                          ⚠️ CAUTION<br>
+                          ${safetyReasons.join('<br>')}
+                        </div>
+                      ` : `
+                        <div class="detail-good">
+                          ✅ Safe Conditions
+                        </div>
+                      `}
+                      
+                      <div class="close-hint">Click again to close</div>
+                    </div>
+                  ` : ''}
                 </div>
               `;
             }).join('')}
@@ -417,7 +863,7 @@ class FishingAssistantCard extends HTMLElement {
   }
 
   getCardSize() {
-    return 6;
+    return this.config.compact_mode ? 4 : 6;
   }
 }
 
@@ -429,7 +875,15 @@ class FishingAssistantCardEditor extends HTMLElement {
   }
 
   setConfig(config) {
-    this._config = { ...config };
+    this._config = { 
+      show_forecast: true,
+      show_current_conditions: true,
+      compact_mode: false,
+      forecast_days: 5,
+      expand_forecast: false,
+      show_component_scores: true,
+      ...config 
+    };
     if (!this.rendered) {
       this.render();
       this.rendered = true;
@@ -467,17 +921,34 @@ class FishingAssistantCardEditor extends HTMLElement {
 
     this.innerHTML = `
       <style>
+        .config-section {
+          padding: 16px;
+          border-bottom: 1px solid var(--divider-color);
+        }
+        .config-section:last-child {
+          border-bottom: none;
+        }
+        .section-title {
+          font-size: 16px;
+          font-weight: 500;
+          margin-bottom: 12px;
+          color: var(--primary-text-color);
+        }
         .config-row {
           display: flex;
           flex-direction: column;
-          padding: 16px;
+          margin-bottom: 16px;
+        }
+        .config-row:last-child {
+          margin-bottom: 0;
         }
         label {
           font-weight: 500;
           margin-bottom: 8px;
           color: var(--primary-text-color);
+          font-size: 14px;
         }
-        select {
+        select, input[type="number"] {
           padding: 8px;
           border: 1px solid var(--divider-color);
           border-radius: 4px;
@@ -490,24 +961,121 @@ class FishingAssistantCardEditor extends HTMLElement {
           color: var(--secondary-text-color);
           margin-top: 4px;
         }
+        .checkbox-row {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin-bottom: 12px;
+        }
+        .checkbox-row input[type="checkbox"] {
+          width: 18px;
+          height: 18px;
+          cursor: pointer;
+        }
+        .checkbox-row label {
+          margin: 0;
+          cursor: pointer;
+          font-weight: normal;
+        }
       </style>
-      <div class="config-row">
-        <label for="entity-select">Fishing Score Entity (Required)</label>
-        <select id="entity-select">
-          <option value="">-- Select Entity --</option>
-          ${entities.map(eid => `
-            <option value="${eid}" ${this._config.entity === eid ? 'selected' : ''}>
-              ${this._hass.states[eid].attributes.friendly_name || eid}
-            </option>
-          `).join('')}
-        </select>
-        <div class="hint">Select the fishing score sensor entity to display</div>
+      
+      <div class="config-section">
+        <div class="section-title">Entity</div>
+        <div class="config-row">
+          <label for="entity-select">Fishing Score Entity (Required)</label>
+          <select id="entity-select">
+            <option value="">-- Select Entity --</option>
+            ${entities.map(eid => `
+              <option value="${eid}" ${this._config.entity === eid ? 'selected' : ''}>
+                ${this._hass.states[eid].attributes.friendly_name || eid}
+              </option>
+            `).join('')}
+          </select>
+          <div class="hint">Select the fishing score sensor entity to display</div>
+        </div>
+      </div>
+
+      <div class="config-section">
+        <div class="section-title">Display Options</div>
+        
+        <div class="checkbox-row">
+          <input type="checkbox" id="show-current" ${this._config.show_current_conditions ? 'checked' : ''}>
+          <label for="show-current">Show Current Conditions</label>
+        </div>
+        
+        <div class="checkbox-row">
+          <input type="checkbox" id="show-component" ${this._config.show_component_scores ? 'checked' : ''}>
+          <label for="show-component">Show Component Score Breakdown</label>
+        </div>
+        
+        <div class="checkbox-row">
+          <input type="checkbox" id="show-forecast" ${this._config.show_forecast ? 'checked' : ''}>
+          <label for="show-forecast">Show Forecast</label>
+        </div>
+        
+        <div class="checkbox-row">
+          <input type="checkbox" id="compact-mode" ${this._config.compact_mode ? 'checked' : ''}>
+          <label for="compact-mode">Compact Mode</label>
+        </div>
+        
+        <div class="checkbox-row">
+          <input type="checkbox" id="expand-forecast" ${this._config.expand_forecast ? 'checked' : ''}>
+          <label for="expand-forecast">Expand Forecast by Default</label>
+        </div>
+      </div>
+
+      <div class="config-section">
+        <div class="section-title">Forecast Settings</div>
+        <div class="config-row">
+          <label for="forecast-days">Number of Forecast Days</label>
+          <input type="number" id="forecast-days" min="1" max="7" value="${this._config.forecast_days || 5}">
+          <div class="hint">Show 1-7 days of forecast (default: 5)</div>
+        </div>
       </div>
     `;
 
+    // Entity select
     const select = this.querySelector('#entity-select');
     select.addEventListener('change', (ev) => {
       this._config = { ...this._config, entity: ev.target.value };
+      this.configChanged(this._config);
+    });
+
+    // Checkboxes
+    const showCurrent = this.querySelector('#show-current');
+    showCurrent.addEventListener('change', (ev) => {
+      this._config = { ...this._config, show_current_conditions: ev.target.checked };
+      this.configChanged(this._config);
+    });
+
+    const showComponent = this.querySelector('#show-component');
+    showComponent.addEventListener('change', (ev) => {
+      this._config = { ...this._config, show_component_scores: ev.target.checked };
+      this.configChanged(this._config);
+    });
+
+    const showForecast = this.querySelector('#show-forecast');
+    showForecast.addEventListener('change', (ev) => {
+      this._config = { ...this._config, show_forecast: ev.target.checked };
+      this.configChanged(this._config);
+    });
+
+    const compactMode = this.querySelector('#compact-mode');
+    compactMode.addEventListener('change', (ev) => {
+      this._config = { ...this._config, compact_mode: ev.target.checked };
+      this.configChanged(this._config);
+    });
+
+    const expandForecast = this.querySelector('#expand-forecast');
+    expandForecast.addEventListener('change', (ev) => {
+      this._config = { ...this._config, expand_forecast: ev.target.checked };
+      this.configChanged(this._config);
+    });
+
+    // Forecast days
+    const forecastDays = this.querySelector('#forecast-days');
+    forecastDays.addEventListener('change', (ev) => {
+      this._config = { ...this._config, forecast_days: parseInt(ev.target.value) };
       this.configChanged(this._config);
     });
   }
@@ -520,6 +1088,6 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: 'fishing-assistant-card',
   name: 'Fishing Assistant Card',
-  description: 'Display fishing conditions and forecast',
+  description: 'Display fishing conditions and forecast with detailed breakdowns',
   preview: true,
 });
