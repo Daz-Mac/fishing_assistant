@@ -83,11 +83,20 @@ class FishingAssistantCard extends HTMLElement {
       popup.style.display = 'none';
     });
     
+    // Hide backdrop
+    const backdrop = this.shadowRoot.querySelector('.popup-backdrop');
+    if (backdrop) {
+      backdrop.classList.remove('active');
+    }
+    
     // Show the active popup if any
     if (this._showDetails) {
       const activePopup = this.shadowRoot.querySelector(`[data-details-key="${this._showDetails}"]`);
       if (activePopup) {
         activePopup.style.display = 'block';
+        if (backdrop) {
+          backdrop.classList.add('active');
+        }
       }
     }
   }
@@ -525,6 +534,19 @@ class FishingAssistantCard extends HTMLElement {
           border-radius: 4px;
           margin-top: 6px;
           text-align: center;
+          font-size: 11px;
+          line-height: 1.4;
+        }
+        .detail-caution {
+          color: #ff9800;
+          font-weight: 600;
+          background: rgba(255, 152, 0, 0.1);
+          padding: 6px;
+          border-radius: 4px;
+          margin-top: 6px;
+          text-align: center;
+          font-size: 11px;
+          line-height: 1.4;
         }
         .detail-good {
           color: #4caf50;
@@ -534,6 +556,7 @@ class FishingAssistantCard extends HTMLElement {
           border-radius: 4px;
           margin-top: 6px;
           text-align: center;
+          font-size: 11px;
         }
         .close-hint {
           margin-top: 8px;
@@ -698,7 +721,6 @@ class FishingAssistantCard extends HTMLElement {
       backdrop.addEventListener('click', () => {
         this._showDetails = null;
         this.updatePopups();
-        backdrop.classList.remove('active');
       });
     }
 
@@ -756,30 +778,6 @@ class FishingAssistantCard extends HTMLElement {
       return tideMap[tide] || '〰️';
     };
 
-    const getSafetyReason = (period, weatherDetails) => {
-      const reasons = [];
-      
-      // Check wind
-      if (weatherDetails?.wind_speed > 30) {
-        reasons.push(`High wind: ${Math.round(weatherDetails.wind_speed)} km/h`);
-      }
-      if (weatherDetails?.wind_gust > 45) {
-        reasons.push(`Strong gusts: ${Math.round(weatherDetails.wind_gust)} km/h`);
-      }
-      
-      // Check waves
-      if (marineDetails?.wave_height > 2.5) {
-        reasons.push(`High waves: ${parseFloat(marineDetails.wave_height).toFixed(1)}m`);
-      }
-      
-      // Check precipitation
-      if (weatherDetails?.precipitation > 70) {
-        reasons.push(`Heavy rain likely: ${weatherDetails.precipitation}%`);
-      }
-      
-      return reasons.length > 0 ? reasons : ['Check local conditions'];
-    };
-
     return days.map(day => {
       const periods = Object.entries(day.periods).map(([key, period]) => ({ ...period, key }));
       const avgScore = Math.round(day.daily_avg_score * 10);
@@ -801,7 +799,7 @@ class FishingAssistantCard extends HTMLElement {
               const safetyClass = period.safety === 'unsafe' ? 'unsafe' : period.safety === 'caution' ? 'caution' : '';
               const safetyColor = period.safety === 'unsafe' ? '#f44336' : period.safety === 'caution' ? '#ff9800' : '#4caf50';
               const detailsKey = `${day.date}-${period.key}`;
-              const safetyReasons = getSafetyReason(period, weatherDetails);
+              const safetyReasons = period.safety_reasons || ['Check local conditions'];
               
               return `
                 <div class="time-block ${scoreClass} ${safetyClass}" 
@@ -883,13 +881,13 @@ class FishingAssistantCard extends HTMLElement {
                       ${safetyReasons.join('<br>')}
                     </div>
                   ` : period.safety === 'caution' ? `
-                    <div class="detail-warning" style="background: rgba(255, 152, 0, 0.1); color: #ff9800;">
+                    <div class="detail-caution">
                       ⚠️ CAUTION<br>
                       ${safetyReasons.join('<br>')}
                     </div>
                   ` : `
                     <div class="detail-good">
-                      ✅ Safe Conditions
+                      ✅ ${safetyReasons[0]}
                     </div>
                   `}
                   
