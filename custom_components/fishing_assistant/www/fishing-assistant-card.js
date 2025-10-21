@@ -381,6 +381,7 @@ class FishingAssistantCard extends HTMLElement {
           gap: 8px;
           padding: 12px;
           background: var(--card-background-color);
+          position: relative;
         }
         .time-blocks.collapsed {
           display: none;
@@ -393,7 +394,7 @@ class FishingAssistantCard extends HTMLElement {
           border-left: 3px solid transparent;
           cursor: pointer;
           transition: transform 0.2s, box-shadow 0.2s;
-          position: relative;
+          position: static;
         }
         .time-block:hover {
           transform: translateY(-2px);
@@ -435,21 +436,32 @@ class FishingAssistantCard extends HTMLElement {
           margin-top: 2px;
         }
         .block-details {
-          position: absolute;
-          top: 100%;
+          position: fixed;
           left: 50%;
-          transform: translateX(-50%);
-          margin-top: 8px;
-          padding: 12px;
+          top: 50%;
+          transform: translate(-50%, -50%);
+          padding: 16px;
           background: var(--card-background-color);
-          border-radius: 6px;
+          border-radius: 8px;
           border: 2px solid var(--primary-color);
-          box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+          box-shadow: 0 8px 24px rgba(0,0,0,0.3);
           font-size: 12px;
           text-align: left;
-          z-index: 100;
-          min-width: 250px;
-          max-width: 300px;
+          z-index: 9999;
+          min-width: 280px;
+          max-width: 90vw;
+          max-height: 80vh;
+          overflow-y: auto;
+        }
+        .block-details::before {
+          content: '';
+          position: fixed;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          background: rgba(0, 0, 0, 0.5);
+          z-index: -1;
         }
         .detail-section {
           margin-bottom: 12px;
@@ -508,13 +520,6 @@ class FishingAssistantCard extends HTMLElement {
         @media (max-width: 600px) {
           .time-blocks {
             grid-template-columns: repeat(2, 1fr);
-          }
-          .block-details {
-            position: fixed;
-            left: 50%;
-            top: 50%;
-            transform: translate(-50%, -50%);
-            max-width: 90vw;
           }
         }
       </style>
