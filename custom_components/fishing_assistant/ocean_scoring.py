@@ -173,15 +173,33 @@ class OceanFishingScorer:
         forecast = {}
         
         try:
-            # Get weather forecast from Home Assistant
+            # Get weather forecast using the new service call method
             weather_state = self.hass.states.get(weather_entity_id)
             if not weather_state:
                 _LOGGER.warning("Weather entity not found: %s", weather_entity_id)
                 return {}
             
-            weather_forecast = weather_state.attributes.get("forecast", [])
+            # Try to get forecast using the new service call method (HA 2023.9+)
+            weather_forecast = []
+            try:
+                service_response = await self.hass.services.async_call(
+                    "weather",
+                    "get_forecasts",
+                    {"entity_id": weather_entity_id, "type": "daily"},
+                    blocking=True,
+                    return_response=True,
+                )
+                
+                if service_response and weather_entity_id in service_response:
+                    weather_forecast = service_response[weather_entity_id].get("forecast", [])
+                    _LOGGER.debug("Got forecast from service call: %d days", len(weather_forecast))
+            except Exception as e:
+                _LOGGER.debug("Service call failed, trying attribute method: %s", e)
+                # Fallback to old attribute method for older HA versions
+                weather_forecast = weather_state.attributes.get("forecast", [])
+            
             if not weather_forecast:
-                _LOGGER.warning("No weather forecast available")
+                _LOGGER.warning("No weather forecast available from %s", weather_entity_id)
                 return {}
             
             # Get marine forecast
