@@ -52,9 +52,9 @@ async def _register_custom_card(hass: HomeAssistant) -> None:
     card_dir = Path(__file__).parent / "www"
     card_url = "/fishing_assistant_local"
     
-    # Register the static path using StaticPathConfig
+    # Register the static path using StaticPathConfig with keyword arguments
     await hass.http.async_register_static_paths([
-        StaticPathConfig(card_url, str(card_dir), False)
+        StaticPathConfig(url_path=card_url, path=str(card_dir), cache_headers=False)
     ])
     
     _LOGGER.info("Registered Fishing Assistant card at %s/fishing-assistant-card.js", card_url)
