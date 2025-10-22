@@ -121,6 +121,8 @@ class FishingAssistantCard extends HTMLElement {
     const wavePeriodEntity = hass.states[`sensor.${locationKey}_wave_period`];
     const tideStateEntity = hass.states[`sensor.${locationKey}_tide_state`];
     const tideStrengthEntity = hass.states[`sensor.${locationKey}_tide_strength`];
+    const windSpeedEntity = hass.states[`sensor.${locationKey}_wind_speed`];
+    const windGustEntity = hass.states[`sensor.${locationKey}_wind_gust`];
 
     return {
       wave_height: waveHeightEntity?.state,
@@ -128,6 +130,8 @@ class FishingAssistantCard extends HTMLElement {
       tide_state: tideStateEntity?.state,
       tide_strength: tideStrengthEntity?.state,
       next_high_tide: tideStateEntity?.attributes?.next_high,
+      wind_speed: windSpeedEntity?.state,
+      wind_gust: windGustEntity?.state,
     };
   }
 
@@ -646,11 +650,11 @@ class FishingAssistantCard extends HTMLElement {
               </div>
             ` : ''}
 
-            ${weatherDetails?.wind_speed ? `
+            ${marineDetails?.wind_speed || weatherDetails?.wind_speed ? `
               <div class="condition-item">
                 <div class="condition-icon">💨</div>
                 <div class="condition-label">Wind Speed</div>
-                <div class="condition-value">${Math.round(weatherDetails.wind_speed)} km/h</div>
+                <div class="condition-value">${Math.round(marineDetails.wind_speed || weatherDetails.wind_speed)} km/h</div>
               </div>
             ` : ''}
 
