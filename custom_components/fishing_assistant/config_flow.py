@@ -104,30 +104,42 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         # Get freshwater species from JSON
         freshwater_species = self.species_loader.get_species_by_type("freshwater")
-        species_options = []
         
-        for species in sorted(freshwater_species, key=lambda s: s.get("name", s["id"])):
-            emoji = species.get("emoji", "🐟")
-            name = species.get("name", species["id"])
-            species_id = species["id"]
+        # Check if species loaded successfully
+        if not freshwater_species:
+            _LOGGER.error("No freshwater species found in species_profiles.json")
+            # Fallback to basic options
+            species_options = [
+                {"value": "bass", "label": "🐟 Bass"},
+                {"value": "pike", "label": "🐟 Pike"},
+                {"value": "trout", "label": "🐟 Trout"},
+                {"value": "carp", "label": "🐟 Carp"},
+            ]
+        else:
+            species_options = []
             
-            # Add active months info
-            active_months = species.get("active_months", [])
-            if len(active_months) == 12:
-                season_info = "Year-round"
-            elif len(active_months) > 0:
-                season_info = f"Active: {len(active_months)} months"
-            else:
-                season_info = ""
-            
-            label = f"{emoji} {name}"
-            if season_info:
-                label += f" ({season_info})"
-            
-            species_options.append({
-                "value": species_id,
-                "label": label
-            })
+            for species in sorted(freshwater_species, key=lambda s: s.get("name", s["id"])):
+                emoji = species.get("emoji", "🐟")
+                name = species.get("name", species["id"])
+                species_id = species["id"]
+                
+                # Add active months info
+                active_months = species.get("active_months", [])
+                if len(active_months) == 12:
+                    season_info = "Year-round"
+                elif len(active_months) > 0:
+                    season_info = f"Active: {len(active_months)} months"
+                else:
+                    season_info = ""
+                
+                label = f"{emoji} {name}"
+                if season_info:
+                    label += f" ({season_info})"
+                
+                species_options.append({
+                    "value": species_id,
+                    "label": label
+                })
 
         return self.async_show_form(
             step_id="freshwater",
@@ -182,64 +194,45 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     def _get_freshwater_schema(self, user_input: dict[str, Any] | None = None):
-        """Get freshwater schema with defaults."""
-        # Initialize species loader if not already done
-        if self.species_loader is None:
-            # This is a synchronous fallback - should not happen in normal flow
-            return vol.Schema({
-                vol.Required(CONF_NAME, default=user_input.get(CONF_NAME, "") if user_input else ""): str,
-                vol.Required(CONF_LATITUDE, default=user_input.get(CONF_LATITUDE, "") if user_input else ""): cv.latitude,
-                vol.Required(CONF_LONGITUDE, default=user_input.get(CONF_LONGITUDE, "") if user_input else ""): cv.longitude,
-                vol.Required(CONF_FISH, default=user_input.get(CONF_FISH, []) if user_input else []): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=[
-                            {"value": "bass", "label": "🐟 Bass"},
-                            {"value": "pike", "label": "🐟 Pike"},
-                            {"value": "perch", "label": "🐟 Perch"},
-                            {"value": "trout", "label": "🐟 Trout"},
-                            {"value": "carp", "label": "🐟 Carp"},
-                            {"value": "catfish", "label": "🐟 Catfish"},
-                            {"value": "walleye", "label": "🐟 Walleye"},
-                            {"value": "crappie", "label": "🐟 Crappie"},
-                        ],
-                        multiple=True,
-                        mode="dropdown",
-                    )
-                ),
-                vol.Required(CONF_BODY_TYPE, default=user_input.get(CONF_BODY_TYPE, "lake") if user_input else "lake"): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=["lake", "river", "pond"],
-                        mode="dropdown",
-                    )
-                ),
-            })
+        """Get freshwater schema with defaults - used for error handling."""
+        # Fallback schema with basic species
+        species_options = [
+            {"value": "bass", "label": "🐟 Bass"},
+            {"value": "pike", "label": "🐟 Pike"},
+            {"value": "trout", "label": "🐟 Trout"},
+            {"value": "carp", "label": "🐟 Carp"},
+            {"value": "catfish", "label": "🐟 Catfish"},
+            {"value": "perch", "label": "🐟 Perch"},
+            {"value": "walleye", "label": "🐟 Walleye"},
+            {"value": "crappie", "label": "🐟 Crappie"},
+        ]
         
-        # Get freshwater species from JSON
-        freshwater_species = self.species_loader.get_species_by_type("freshwater")
-        species_options = []
-        
-        for species in sorted(freshwater_species, key=lambda s: s.get("name", s["id"])):
-            emoji = species.get("emoji", "🐟")
-            name = species.get("name", species["id"])
-            species_id = species["id"]
-            
-            # Add active months info
-            active_months = species.get("active_months", [])
-            if len(active_months) == 12:
-                season_info = "Year-round"
-            elif len(active_months) > 0:
-                season_info = f"Active: {len(active_months)} months"
-            else:
-                season_info = ""
-            
-            label = f"{emoji} {name}"
-            if season_info:
-                label += f" ({season_info})"
-            
-            species_options.append({
-                "value": species_id,
-                "label": label
-            })
+        # If species loader is available, use it
+        if self.species_loader and self.species_loader._profiles:
+            freshwater_species = self.species_loader.get_species_by_type("freshwater")
+            if freshwater_species:
+                species_options = []
+                for species in sorted(freshwater_species, key=lambda s: s.get("name", s["id"])):
+                    emoji = species.get("emoji", "🐟")
+                    name = species.get("name", species["id"])
+                    species_id = species["id"]
+                    
+                    active_months = species.get("active_months", [])
+                    if len(active_months) == 12:
+                        season_info = "Year-round"
+                    elif len(active_months) > 0:
+                        season_info = f"Active: {len(active_months)} months"
+                    else:
+                        season_info = ""
+                    
+                    label = f"{emoji} {name}"
+                    if season_info:
+                        label += f" ({season_info})"
+                    
+                    species_options.append({
+                        "value": species_id,
+                        "label": label
+                    })
         
         return vol.Schema({
             vol.Required(CONF_NAME, default=user_input.get(CONF_NAME, "") if user_input else ""): str,
