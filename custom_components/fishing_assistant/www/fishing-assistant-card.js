@@ -638,14 +638,6 @@ class FishingAssistantCard extends HTMLElement {
               </div>
             ` : ''}
 
-            ${weatherDetails?.wind_speed ? `
-              <div class="condition-item">
-                <div class="condition-icon">💨</div>
-                <div class="condition-label">Wind</div>
-                <div class="condition-value">${Math.round(weatherDetails.wind_speed)} km/h</div>
-              </div>
-            ` : ''}
-
             ${marineDetails?.wave_height ? `
               <div class="condition-item">
                 <div class="condition-icon">🌊</div>
@@ -666,7 +658,7 @@ class FishingAssistantCard extends HTMLElement {
               <div class="condition-item">
                 <div class="condition-icon">⏰</div>
                 <div class="condition-label">Next High Tide</div>
-                <div class="condition-value">${new Date(marineDetails.next_high_tide).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}</div>
+                <div class="condition-value">${new Date(marineDetails.next_high_tide).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false })}</div>
               </div>
             ` : ''}
 
