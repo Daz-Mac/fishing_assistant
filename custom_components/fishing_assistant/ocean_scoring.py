@@ -1,4 +1,4 @@
-"""Ocean fishing scoring algorithm."""
+"""Ocean fishing scoring algorithm with improved astronomical calculations."""
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List, Tuple
@@ -23,6 +23,7 @@ from .const import (
     TIME_PERIOD_DEFINITIONS,
 )
 from .species_loader import SpeciesLoader
+from .helpers.astro import calculate_astronomy_forecast
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -37,6 +38,8 @@ class OceanFishingScorer:
         self.species_loader = SpeciesLoader(hass)
         self.species_profile = None
         self._initialized = False
+        self._astro_forecast_cache = None
+        self._astro_cache_time = None
 
     async def async_initialize(self):
         """Initialize the scorer asynchronously."""
@@ -61,12 +64,38 @@ class OceanFishingScorer:
                     self.species_profile.get("name", species_id)
                 )
 
+            # Pre-load astronomical forecast
+            await self._refresh_astro_cache()
+
             self._initialized = True
 
         except Exception as e:
             _LOGGER.error("Error initializing ocean scorer: %s", e, exc_info=True)
             self.species_profile = self._get_fallback_profile()
             self._initialized = True
+
+    async def _refresh_astro_cache(self):
+        """Refresh astronomical forecast cache."""
+        try:
+            latitude = self.config.get("latitude")
+            longitude = self.config.get("longitude")
+            
+            if latitude is None or longitude is None:
+                _LOGGER.warning("No coordinates configured, using fallback astro data")
+                return
+            
+            _LOGGER.info("Refreshing astronomical forecast cache")
+            self._astro_forecast_cache = await calculate_astronomy_forecast(
+                self.hass,
+                latitude,
+                longitude,
+                days=7
+            )
+            self._astro_cache_time = datetime.now()
+            _LOGGER.debug("Astronomical cache refreshed with %d days", len(self._astro_forecast_cache))
+        except Exception as e:
+            _LOGGER.error("Error refreshing astro cache: %s", e, exc_info=True)
+            self._astro_forecast_cache = None
 
     def _get_fallback_profile(self) -> Dict:
         """Return a fallback species profile."""
@@ -152,8 +181,6 @@ class OceanFishingScorer:
         # Scale to 0-10
         final_score = round(total_score * 10, 1)
 
-        
-
         # Check safety
         safety_status, safety_reasons = self._check_safety(weather_data, marine_data)
 
@@ -192,6 +219,11 @@ class OceanFishingScorer:
         forecast = {}
 
         try:
+            # Refresh astro cache if needed (once per day)
+            if (self._astro_cache_time is None or 
+                (datetime.now() - self._astro_cache_time).total_seconds() > 86400):
+                await self._refresh_astro_cache()
+
             # Get weather forecast using the new service call method
             weather_state = self.hass.states.get(weather_entity_id)
             if not weather_state:
@@ -465,11 +497,62 @@ class OceanFishingScorer:
             return {"state": "unknown", "strength": 50}
 
     async def _get_astro_for_time(self, target_time: datetime) -> Dict:
-        """Get astronomical data for a specific time."""
+        """Get astronomical data for a specific time using Skyfield calculations."""
+        if not target_time:
+            return self._get_fallback_astro()
+        
+        try:
+            date_key = target_time.date().isoformat()
+            
+            # Use cached astronomical forecast if available
+            if self._astro_forecast_cache and date_key in self._astro_forecast_cache:
+                astro_day = self._astro_forecast_cache[date_key]
+                
+                # Parse sunrise/sunset times
+                sunrise = None
+                sunset = None
+                
+                if astro_day.get("sunrise"):
+                    try:
+                        sunrise_time = datetime.strptime(astro_day["sunrise"], "%H:%M").time()
+                        sunrise = datetime.combine(target_time.date(), sunrise_time)
+                    except (ValueError, TypeError) as e:
+                        _LOGGER.debug("Error parsing sunrise: %s", e)
+                
+                if astro_day.get("sunset"):
+                    try:
+                        sunset_time = datetime.strptime(astro_day["sunset"], "%H:%M").time()
+                        sunset = datetime.combine(target_time.date(), sunset_time)
+                    except (ValueError, TypeError) as e:
+                        _LOGGER.debug("Error parsing sunset: %s", e)
+                
+                # Get moon phase (already normalized 0-1)
+                moon_phase = astro_day.get("moon_phase", 0.5)
+                
+                return {
+                    "sunrise": sunrise,
+                    "sunset": sunset,
+                    "moon_phase": moon_phase,
+                    "moonrise": astro_day.get("moonrise"),
+                    "moonset": astro_day.get("moonset"),
+                    "moon_transit": astro_day.get("moon_transit"),
+                    "moon_underfoot": astro_day.get("moon_underfoot"),
+                    "source": "skyfield",
+                }
+            else:
+                _LOGGER.debug("No cached astro data for %s, using fallback", date_key)
+                return self._get_fallback_astro(target_time)
+                
+        except Exception as e:
+            _LOGGER.error("Error getting astro data: %s", e, exc_info=True)
+            return self._get_fallback_astro(target_time)
+
+    def _get_fallback_astro(self, target_time: Optional[datetime] = None) -> Dict:
+        """Get fallback astronomical data from Home Assistant entities."""
         astro = {}
         
-        if not target_time:
-            return {"moon_phase": 0.5}
+        if target_time is None:
+            target_time = datetime.now()
         
         try:
             # Get sun data
@@ -534,10 +617,15 @@ class OceanFishingScorer:
                 astro["moon_phase"] = phase_map.get(phase_name, 0.5)
             else:
                 astro["moon_phase"] = 0.5
+            
+            astro["source"] = "fallback"
 
         except Exception as e:
-            _LOGGER.debug("Error getting astro data: %s", e)
+            _LOGGER.debug("Error getting fallback astro data: %s", e)
             astro["moon_phase"] = 0.5
+            astro["sunrise"] = target_time.replace(hour=6, minute=30, second=0)
+            astro["sunset"] = target_time.replace(hour=18, minute=30, second=0)
+            astro["source"] = "fallback"
 
         return astro
 
