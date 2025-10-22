@@ -94,8 +94,40 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_freshwater(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Handle freshwater fishing setup."""
+        # Initialize species loader if not already done
+        if self.species_loader is None:
+            self.species_loader = SpeciesLoader(self.hass)
+            await self.species_loader.async_load_profiles()
+        
         if user_input is not None:
             return await self._async_step_freshwater(user_input)
+
+        # Get freshwater species from JSON
+        freshwater_species = self.species_loader.get_species_by_type("freshwater")
+        species_options = []
+        
+        for species in sorted(freshwater_species, key=lambda s: s.get("name", s["id"])):
+            emoji = species.get("emoji", "🐟")
+            name = species.get("name", species["id"])
+            species_id = species["id"]
+            
+            # Add active months info
+            active_months = species.get("active_months", [])
+            if len(active_months) == 12:
+                season_info = "Year-round"
+            elif len(active_months) > 0:
+                season_info = f"Active: {len(active_months)} months"
+            else:
+                season_info = ""
+            
+            label = f"{emoji} {name}"
+            if season_info:
+                label += f" ({season_info})"
+            
+            species_options.append({
+                "value": species_id,
+                "label": label
+            })
 
         return self.async_show_form(
             step_id="freshwater",
@@ -105,16 +137,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_LONGITUDE): cv.longitude,
                 vol.Required(CONF_FISH): selector.SelectSelector(
                     selector.SelectSelectorConfig(
-                        options=[
-                            "bass",
-                            "pike",
-                            "perch",
-                            "trout",
-                            "carp",
-                            "catfish",
-                            "walleye",
-                            "crappie",
-                        ],
+                        options=species_options,
                         multiple=True,
                         mode="dropdown",
                     )
@@ -160,27 +183,76 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     def _get_freshwater_schema(self, user_input: dict[str, Any] | None = None):
         """Get freshwater schema with defaults."""
+        # Initialize species loader if not already done
+        if self.species_loader is None:
+            # This is a synchronous fallback - should not happen in normal flow
+            return vol.Schema({
+                vol.Required(CONF_NAME, default=user_input.get(CONF_NAME, "") if user_input else ""): str,
+                vol.Required(CONF_LATITUDE, default=user_input.get(CONF_LATITUDE, "") if user_input else ""): cv.latitude,
+                vol.Required(CONF_LONGITUDE, default=user_input.get(CONF_LONGITUDE, "") if user_input else ""): cv.longitude,
+                vol.Required(CONF_FISH, default=user_input.get(CONF_FISH, []) if user_input else []): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {"value": "bass", "label": "🐟 Bass"},
+                            {"value": "pike", "label": "🐟 Pike"},
+                            {"value": "perch", "label": "🐟 Perch"},
+                            {"value": "trout", "label": "🐟 Trout"},
+                            {"value": "carp", "label": "🐟 Carp"},
+                            {"value": "catfish", "label": "🐟 Catfish"},
+                            {"value": "walleye", "label": "🐟 Walleye"},
+                            {"value": "crappie", "label": "🐟 Crappie"},
+                        ],
+                        multiple=True,
+                        mode="dropdown",
+                    )
+                ),
+                vol.Required(CONF_BODY_TYPE, default=user_input.get(CONF_BODY_TYPE, "lake") if user_input else "lake"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=["lake", "river", "pond"],
+                        mode="dropdown",
+                    )
+                ),
+            })
+        
+        # Get freshwater species from JSON
+        freshwater_species = self.species_loader.get_species_by_type("freshwater")
+        species_options = []
+        
+        for species in sorted(freshwater_species, key=lambda s: s.get("name", s["id"])):
+            emoji = species.get("emoji", "🐟")
+            name = species.get("name", species["id"])
+            species_id = species["id"]
+            
+            # Add active months info
+            active_months = species.get("active_months", [])
+            if len(active_months) == 12:
+                season_info = "Year-round"
+            elif len(active_months) > 0:
+                season_info = f"Active: {len(active_months)} months"
+            else:
+                season_info = ""
+            
+            label = f"{emoji} {name}"
+            if season_info:
+                label += f" ({season_info})"
+            
+            species_options.append({
+                "value": species_id,
+                "label": label
+            })
+        
         return vol.Schema({
-            vol.Required(CONF_NAME, default=user_input.get(CONF_NAME, "")): str,
-            vol.Required(CONF_LATITUDE, default=user_input.get(CONF_LATITUDE, "")): cv.latitude,
-            vol.Required(CONF_LONGITUDE, default=user_input.get(CONF_LONGITUDE, "")): cv.longitude,
-            vol.Required(CONF_FISH, default=user_input.get(CONF_FISH, [])): selector.SelectSelector(
+            vol.Required(CONF_NAME, default=user_input.get(CONF_NAME, "") if user_input else ""): str,
+            vol.Required(CONF_LATITUDE, default=user_input.get(CONF_LATITUDE, "") if user_input else ""): cv.latitude,
+            vol.Required(CONF_LONGITUDE, default=user_input.get(CONF_LONGITUDE, "") if user_input else ""): cv.longitude,
+            vol.Required(CONF_FISH, default=user_input.get(CONF_FISH, []) if user_input else []): selector.SelectSelector(
                 selector.SelectSelectorConfig(
-                    options=[
-                        "bass",
-                        "pike",
-                        "perch",
-                        "trout",
-                        "carp",
-                        "catfish",
-                        "walleye",
-                        "crappie",
-                    ],
+                    options=species_options,
                     multiple=True,
                     mode="dropdown",
                 )
             ),
-            vol.Required(CONF_BODY_TYPE, default=user_input.get(CONF_BODY_TYPE, "lake")): selector.SelectSelector(
+            vol.Required(CONF_BODY_TYPE, default=user_input.get(CONF_BODY_TYPE, "lake") if user_input else "lake"): selector.SelectSelector(
                 selector.SelectSelectorConfig(
                     options=["lake", "river", "pond"],
                     mode="dropdown",
@@ -257,7 +329,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return await self.async_step_ocean_habitat()
 
         # Build a comprehensive species list organized by region
-        regions = self.species_loader.get_regions()
+        regions = self.species_loader.get_regions_by_type("ocean")
         species_options = []
 
         # === SECTION 1: GENERAL REGION PROFILES ===
@@ -282,7 +354,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             "label": "━━━━━ 🐟 TARGET SPECIFIC SPECIES ━━━━━"
         })
 
-        # Collect all species from all regions (excluding global)
+        # Collect all ocean species from all regions (excluding global)
         all_species = []
         for region in regions:
             region_id = region["id"]
@@ -296,6 +368,10 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             # Filter out general profiles and add to collection
             for species in species_list:
+                # Only include ocean species
+                if species.get("type") != "ocean":
+                    continue
+                    
                 if (not species["id"].startswith("general_mixed") 
                     and not species["id"].startswith("surf_predators") 
                     and not species["id"].startswith("flatfish")):

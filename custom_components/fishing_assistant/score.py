@@ -1,12 +1,11 @@
 from homeassistant.core import HomeAssistant
 import datetime
-from typing import Dict
+from typing import Dict, Optional
 import aiohttp
 import pandas as pd
 import logging
 
-
-from .fish_profiles import FISH_PROFILES
+from .species_loader import SpeciesLoader
 from .helpers.astro import calculate_astronomy_forecast
 
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
@@ -64,10 +63,36 @@ async def get_fish_score_forecast(
     timezone: str,
     elevation: float,
     body_type: str,
+    species_loader: Optional[SpeciesLoader] = None,
 ) -> Dict[str, Dict[str, str | float]]:
-    fish_profile = FISH_PROFILES.get(fish)
+    """
+    Get fishing score forecast for a species.
+    
+    Args:
+        hass: Home Assistant instance
+        fish: Species ID (e.g., "bass", "pike", "trout")
+        lat: Latitude
+        lon: Longitude
+        timezone: Timezone string
+        elevation: Elevation in meters
+        body_type: Type of water body (lake, river, pond, reservoir)
+        species_loader: Optional SpeciesLoader instance (will create if not provided)
+    """
+    # Initialize species loader if not provided
+    if species_loader is None:
+        species_loader = SpeciesLoader(hass)
+        await species_loader.async_load_profiles()
+
+    # Get species profile from JSON
+    fish_profile = species_loader.get_species(fish)
+    
     if not fish_profile:
-        _LOGGER.warning(f"No fish profile found for '{fish}'")
+        _LOGGER.warning(f"No species profile found for '{fish}'")
+        return {}
+
+    # Check if this is a freshwater species
+    if fish_profile.get("type") != "freshwater":
+        _LOGGER.error(f"Species '{fish}' is not a freshwater species. Use ocean scoring instead.")
         return {}
 
     today = datetime.date.today()
@@ -97,16 +122,7 @@ async def get_fish_score_forecast(
         async with aiohttp.ClientSession() as session:
             async with session.get(
                 OPEN_METEO_URL,
-                params={
-                    "latitude": lat,
-                    "longitude": lon,
-                    "hourly": "temperature_2m,cloudcover,pressure_msl,precipitation,windspeed_10m",
-                    "daily": "sunrise,sunset",
-                    "timezone": timezone,
-                    "elevation": elevation,
-                    "start_date": str(today),
-                    "end_date": str(end_date)
-                },
+                params=params,
                 timeout=aiohttp.ClientTimeout(total=15)
             ) as response:
                 if response.status != 200:
@@ -140,7 +156,6 @@ async def get_fish_score_forecast(
     forecast = {}
     weights = get_profile_weights(body_type)
 
-
     for date, group in hourly.groupby("date"):
         date_str = str(date)
         scores = []
@@ -172,9 +187,18 @@ async def get_fish_score_forecast(
 def _score_hour(row, profile, astro, weights: dict) -> float:
     hour = row["hour"]
 
-    temp_score = _score_temp(row["temp"], profile["temp_range"])
-    cloud_score = 1 - abs(row["cloud"] - profile["ideal_cloud"]) / 100
-    press_score = _score_pressure_trend(row["pressure_trend"])
+    # Extract temp_range from profile (handle both tuple and list formats)
+    temp_range = profile.get("temp_range", [10, 25])
+    if isinstance(temp_range, tuple):
+        temp_range = list(temp_range)
+
+    temp_score = _score_temp(row["temp"], temp_range)
+    
+    # Get ideal_cloud from profile
+    ideal_cloud = profile.get("ideal_cloud", 50)
+    cloud_score = 1 - abs(row["cloud"] - ideal_cloud) / 100
+    
+    press_score = _score_pressure_trend(row["pressure_trend"], profile.get("prefers_low_pressure", True))
     wind_score = _score_wind(row["wind"])
     precip_score = _score_precip(row["precip"])
 
@@ -207,23 +231,37 @@ def _score_hour(row, profile, astro, weights: dict) -> float:
 # Individual scoring functions
 # ----------------------------
 
-def _score_temp(temp: float, ideal_range: tuple[float, float]) -> float:
+def _score_temp(temp: float, ideal_range: list) -> float:
+    """Score temperature based on ideal range."""
     # Note: temp is air temp in °C, used as proxy for water temp.
-    low, high = ideal_range
+    low, high = ideal_range[0], ideal_range[1]
     if temp < low:
         return max(0, (temp - (low - 10)) / 10)
     elif temp > high:
         return max(0, (high + 10 - temp) / 10)
     return 1.0
 
-def _score_pressure_trend(trend: float) -> float:
+
+def _score_pressure_trend(trend: float, prefers_low: bool = True) -> float:
+    """Score pressure trend based on species preference."""
     if pd.isna(trend):
         return 0.7
-    if trend < -2:
-        return 1.0
-    elif trend > 2:
-        return 0.4
-    return 0.7
+    
+    if prefers_low:
+        # Species that prefer falling/low pressure (most fish)
+        if trend < -2:
+            return 1.0
+        elif trend > 2:
+            return 0.4
+        return 0.7
+    else:
+        # Species that prefer stable/rising pressure
+        if trend > 2:
+            return 0.9
+        elif trend < -2:
+            return 0.5
+        return 0.8
+
 
 def _score_wind(speed: float) -> float:
     # Assumes km/h
@@ -235,6 +273,7 @@ def _score_wind(speed: float) -> float:
         return 0.6
     return 0.2
 
+
 def _score_precip(amount: float) -> float:
     # Assumes mm/h
     if amount == 0:
@@ -245,12 +284,14 @@ def _score_precip(amount: float) -> float:
         return 0.5
     return 0.2
 
+
 def _score_twilight(hour: int, sunrise, sunset) -> float:
     if not sunrise or not sunset:
         return 0.7
     if abs(hour - sunrise.hour) <= 1 or abs(hour - sunset.hour) <= 1:
         return 1.0
     return 0.7
+
 
 def _score_moon_phase(phase: float) -> float:
     # 0.0 = New, 0.5 = Full, 1.0 = New
@@ -259,6 +300,7 @@ def _score_moon_phase(phase: float) -> float:
     if phase < 0.1 or phase > 0.9:
         return 1.0
     return 0.7
+
 
 def _score_solunar(hour: int, transit, underfoot, moonrise, moonset) -> float:
     boost = 0
@@ -278,3 +320,4 @@ def _parse_time(time_str: str):
         return datetime.datetime.strptime(time_str, "%H:%M").time()
     except Exception:
         return None
+    

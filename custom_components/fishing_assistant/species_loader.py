@@ -42,13 +42,14 @@ class SpeciesLoader:
     def _get_fallback_profiles(self) -> Dict:
         """Return minimal fallback profiles if JSON fails to load."""
         return {
-            "version": "2.0.0-fallback",
+            "version": "2.1.0-fallback",
             "regions": {
                 "global": {
                     "id": "global",
                     "name": "Global",
                     "description": "General species",
-                    "coordinates": None
+                    "coordinates": None,
+                    "type": "mixed"
                 }
             },
             "species": {
@@ -57,11 +58,13 @@ class SpeciesLoader:
                     "name": "General Mixed Species",
                     "emoji": "🎣",
                     "regions": ["global"],
+                    "type": "ocean",
                     "active_months": list(range(1, 13)),
                     "best_tide": "moving",
                     "light_preference": "dawn_dusk",
                     "cloud_bonus": 0.5,
                     "wave_preference": "moderate",
+                    "temp_range": [8, 26],
                 }
             }
         }
@@ -97,10 +100,26 @@ class SpeciesLoader:
 
         return species_list
 
+    def get_species_by_type(self, species_type: str) -> List[Dict]:
+        """Get all species of a specific type (ocean/freshwater)."""
+        if not self._profiles:
+            return []
+
+        species_dict = self._profiles.get("species", {})
+        species_list = []
+        
+        for species_id, species_data in species_dict.items():
+            if species_data.get("type") == species_type:
+                profile = species_data.copy()
+                profile["id"] = species_id
+                species_list.append(profile)
+
+        return species_list
+
     def get_regions(self) -> List[Dict]:
         """Get list of available regions with metadata."""
         if not self._profiles:
-            return [{"id": "global", "name": "Global", "description": "General species"}]
+            return [{"id": "global", "name": "Global", "description": "General species", "type": "mixed"}]
 
         regions = []
         for region_id, region_data in self._profiles.get("regions", {}).items():
@@ -108,10 +127,16 @@ class SpeciesLoader:
                 "id": region_id,
                 "name": region_data.get("name", region_id),
                 "description": region_data.get("description", ""),
-                "coordinates": region_data.get("coordinates")
+                "coordinates": region_data.get("coordinates"),
+                "type": region_data.get("type", "mixed")
             })
 
         return regions
+
+    def get_regions_by_type(self, region_type: str) -> List[Dict]:
+        """Get regions filtered by type (ocean/freshwater/mixed)."""
+        all_regions = self.get_regions()
+        return [r for r in all_regions if r.get("type") == region_type]
 
     def get_all_species(self) -> List[Dict]:
         """Get all species from all regions."""
@@ -145,3 +170,22 @@ class SpeciesLoader:
             return regions_dict[region_id].copy()
 
         return None
+
+    def get_freshwater_species_list(self) -> List[str]:
+        """Get list of freshwater species IDs for backwards compatibility."""
+        freshwater_species = self.get_species_by_type("freshwater")
+        return [s["id"] for s in freshwater_species]
+
+    def convert_legacy_fish_name(self, legacy_name: str) -> str:
+        """Convert legacy fish names to new species IDs."""
+        # Mapping of old names to new IDs
+        legacy_mapping = {
+            "largemouth_bass": "bass",
+            "smallmouth_bass": "bass",
+            "rainbow_trout": "trout",
+            "brown_trout": "trout",
+            "brook_trout": "trout",
+            "wels_catfish": "catfish",
+        }
+        
+        return legacy_mapping.get(legacy_name, legacy_name)
