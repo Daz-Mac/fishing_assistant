@@ -113,7 +113,10 @@ class FishingAssistantCard extends HTMLElement {
 
   getMarineDetails(hass, entity) {
     // Use location_key if available, otherwise fall back to location name
-    const locationKey = entity.attributes.location_key || entity.attributes.location?.toLowerCase().replace(' ', '_');
+    const location = entity.attributes.location_key || entity.attributes.location;
+    if (!location) return {};
+    
+    const locationKey = location.toLowerCase().replace(/ /g, '_');
 
     if (!locationKey) return {};
 
@@ -662,7 +665,7 @@ class FishingAssistantCard extends HTMLElement {
               <div class="condition-item">
                 <div class="condition-icon">⏰</div>
                 <div class="condition-label">Next High Tide</div>
-                <div class="condition-value">${new Date(marineDetails.next_high_tide).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false })}</div>
+                <div class="condition-value">${new Date(marineDetails.next_high_tide).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
               </div>
             ` : ''}
 
@@ -670,7 +673,7 @@ class FishingAssistantCard extends HTMLElement {
               <div class="condition-item">
                 <div class="condition-icon">${weatherDetails.cloud_cover < 30 ? '☀️' : weatherDetails.cloud_cover < 70 ? '⛅' : '☁️'}</div>
                 <div class="condition-label">Cloud Cover</div>
-                <div class="condition-value">${weatherDetails.cloud_cover}%</div>
+                <div class="condition-value">${Math.round(weatherDetails.cloud_cover)}%</div>
               </div>
             ` : ''}
 
@@ -750,14 +753,27 @@ class FishingAssistantCard extends HTMLElement {
     const entity = this._hass.states[this.config.entity];
     if (!entity) return null;
 
-    const locationKey = entity.attributes.location_key || entity.attributes.location?.toLowerCase().replace(' ', '_');
-    if (!locationKey) return null;
+    const location = entity.attributes.location_key || entity.attributes.location;
+    if (!location) return null;
+    
+    const locationKey = location.toLowerCase().replace(/ /g, '_');
 
+    // First try to find weather entity with location key
     const possibleWeatherEntities = Object.keys(this._hass.states).filter(eid =>
       eid.startsWith('weather.') && eid.includes(locationKey)
     );
 
-    return possibleWeatherEntities[0] || null;
+    // If found, return it; otherwise try to find any weather entity as fallback
+    if (possibleWeatherEntities.length > 0) {
+      return possibleWeatherEntities[0];
+    }
+
+    // Fallback to any weather entity
+    const anyWeatherEntity = Object.keys(this._hass.states).find(eid =>
+      eid.startsWith('weather.')
+    );
+
+    return anyWeatherEntity || null;
   }
 
   toggleAllDays() {
@@ -830,10 +846,10 @@ class FishingAssistantCard extends HTMLElement {
                   <div class="block-time">${period.time_block}</div>
                   <div class="block-score">${score}</div>
                   <div class="block-conditions">
-                    ${periodWeather.wind_speed ? `💨${Math.round(periodWeather.wind_speed)}` : ''}
-                    ${periodWeather.cloud_cover !== undefined ?
+                    ${periodWeather?.wind_speed ? `💨${Math.round(periodWeather.wind_speed)}` : ''}
+                    ${periodWeather?.cloud_cover !== undefined ?
                       (periodWeather.cloud_cover < 30 ? '☀️' : periodWeather.cloud_cover < 70 ? '⛅' : '☁️') : ''}
-                    ${periodMarine.wave_height ? `🌊${parseFloat(periodMarine.wave_height).toFixed(1)}m` : ''}
+                    ${periodMarine?.wave_height ? `🌊${parseFloat(periodMarine.wave_height).toFixed(1)}m` : ''}
                   </div>
                   <div class="block-tide">${getTideEmoji(period.tide_state)}</div>
                   <div class="block-safety" style="color: ${safetyColor};">${period.safety}</div>
@@ -858,19 +874,19 @@ class FishingAssistantCard extends HTMLElement {
                       <span class="detail-label">Tide:</span>
                       <span class="detail-value">${period.tide_state.replace(/_/g, ' ')}</span>
                     </div>
-                    ${periodMarine.wave_height ? `
+                    ${periodMarine?.wave_height ? `
                       <div class="detail-row">
                         <span class="detail-label">Wave Height:</span>
                         <span class="detail-value">${parseFloat(periodMarine.wave_height).toFixed(1)}m</span>
                       </div>
                     ` : ''}
-                    ${periodMarine.wave_period ? `
+                    ${periodMarine?.wave_period ? `
                       <div class="detail-row">
                         <span class="detail-label">Wave Period:</span>
-                        <span class="detail-value">${periodMarine.wave_period}s</span>
+                        <span class="detail-value">${Math.round(periodMarine.wave_period)}s</span>
                       </div>
                     ` : ''}
-                    ${periodMarine.tide_strength ? `
+                    ${periodMarine?.tide_strength ? `
                       <div class="detail-row">
                         <span class="detail-label">Tide Strength:</span>
                         <span class="detail-value">${periodMarine.tide_strength}</span>
