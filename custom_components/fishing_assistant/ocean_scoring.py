@@ -325,6 +325,20 @@ class OceanFishingScorer:
                         "safety_reasons": result.get("safety_reasons", []),
                         "tide_state": result["tide_state"],
                         "conditions": result["conditions_summary"],
+                        # Add weather data for this period
+                        "weather": {
+                            "temperature": weather_data.get("temperature"),
+                            "wind_speed": weather_data.get("wind_speed", 0),
+                            "wind_gust": weather_data.get("wind_gust", 0),
+                            "cloud_cover": weather_data.get("cloud_cover", 50),
+                            "precipitation_probability": weather_data.get("precipitation_probability", 0),
+                            "pressure": weather_data.get("pressure", 1013),
+                        },
+                        # Add marine data for this period
+                        "marine": {
+                            "wave_height": marine_block_data["current"].get("wave_height", 1.0),
+                            "wave_period": marine_block_data["current"].get("wave_period"),
+                        },
                     }
                 
                 # Calculate daily average score (only if we have periods)

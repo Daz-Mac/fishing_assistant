@@ -235,7 +235,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             # Extract species_id and determine region from the selection
             species_id = user_input[CONF_SPECIES_ID]
-            
+
             # Check if this is a general_mixed selection
             if species_id.startswith("general_mixed_"):
                 # Extract region from the ID
@@ -250,69 +250,69 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     species_region = available_regions[0]
                 else:
                     species_region = "global"
-            
+
             self.ocean_config[CONF_SPECIES_ID] = species_id
             self.ocean_config[CONF_SPECIES_REGION] = species_region
-            
+
             return await self.async_step_ocean_habitat()
 
         # Build a comprehensive species list organized by region
         regions = self.species_loader.get_regions()
         species_options = []
-        
+
         # === SECTION 1: GENERAL REGION PROFILES ===
         species_options.append({
             "value": "separator_regions",
             "label": "━━━━━ 🎣 GENERAL REGION PROFILES ━━━━━"
         })
-        
+
         for region in regions:
             region_id = region["id"]
             region_name = region["name"]
-            
+
             # Add a "General Mixed" option for each region
             species_options.append({
                 "value": f"general_mixed_{region_id}",
                 "label": f"🎣 {region_name} - General Mixed Species"
             })
-        
+
         # === SECTION 2: SPECIFIC SPECIES ===
         species_options.append({
             "value": "separator_species",
             "label": "━━━━━ 🐟 TARGET SPECIFIC SPECIES ━━━━━"
         })
-        
+
         # Collect all species from all regions (excluding global)
         all_species = []
         for region in regions:
             region_id = region["id"]
-            
+
             # Skip global region for species listing (it only has general profiles)
             if region_id == "global":
                 continue
-            
+
             # Get all species for this region
             species_list = self.species_loader.get_species_by_region(region_id)
-            
+
             # Filter out general profiles and add to collection
             for species in species_list:
                 if (not species["id"].startswith("general_mixed") 
                     and not species["id"].startswith("surf_predators") 
                     and not species["id"].startswith("flatfish")):
-                    
+
                     # Check if we already have this species (avoid duplicates)
                     if not any(s["id"] == species["id"] for s in all_species):
                         all_species.append(species)
-        
+
         # Sort species alphabetically by name
         all_species.sort(key=lambda s: s.get("name", s["id"]))
-        
+
         # Add sorted species to options
         for species in all_species:
             emoji = species.get("emoji", "🐟")
             name = species.get("name", species["id"])
             species_id = species["id"]
-            
+
             # Add active months info
             active_months = species.get("active_months", [])
             if len(active_months) == 12:
@@ -321,11 +321,11 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 season_info = f"Active: {len(active_months)} months"
             else:
                 season_info = ""
-            
+
             label = f"{emoji} {name}"
             if season_info:
                 label += f" ({season_info})"
-            
+
             species_options.append({"value": species_id, "label": label})
 
         return self.async_show_form(

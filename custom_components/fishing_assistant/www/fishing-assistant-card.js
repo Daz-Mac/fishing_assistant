@@ -3,7 +3,7 @@ class FishingAssistantCard extends HTMLElement {
     super();
     this.attachShadow({ mode: 'open' });
     this._expandedDays = new Set();
-    this._showDetails = null; // Track which time block details are shown
+    this._showDetails = null;
   }
 
   static getConfigElement() {
@@ -66,30 +66,25 @@ class FishingAssistantCard extends HTMLElement {
     event.stopPropagation();
     const detailsKey = `${dayDate}-${blockName}`;
     
-    // Toggle the popup
     if (this._showDetails === detailsKey) {
       this._showDetails = null;
     } else {
       this._showDetails = detailsKey;
     }
     
-    // Update only the popups without full re-render
     this.updatePopups();
   }
 
   updatePopups() {
-    // Hide all popups first
     this.shadowRoot.querySelectorAll('.block-details').forEach(popup => {
       popup.style.display = 'none';
     });
     
-    // Hide backdrop
     const backdrop = this.shadowRoot.querySelector('.popup-backdrop');
     if (backdrop) {
       backdrop.classList.remove('active');
     }
     
-    // Show the active popup if any
     if (this._showDetails) {
       const activePopup = this.shadowRoot.querySelector(`[data-details-key="${this._showDetails}"]`);
       if (activePopup) {
@@ -117,7 +112,6 @@ class FishingAssistantCard extends HTMLElement {
   }
 
   getMarineDetails(hass, locationName) {
-    // Try to find wave height and tide sensors
     const waveHeightEntity = hass.states[`sensor.${locationName.toLowerCase().replace(' ', '_')}_wave_height`];
     const wavePeriodEntity = hass.states[`sensor.${locationName.toLowerCase().replace(' ', '_')}_wave_period`];
     const tideStateEntity = hass.states[`sensor.${locationName.toLowerCase().replace(' ', '_')}_tide_state`];
@@ -135,20 +129,17 @@ class FishingAssistantCard extends HTMLElement {
     const attrs = entity.attributes;
     const config = this.config;
     
-    // Convert score from 0-10 to 0-100 scale
     const rawScore = parseFloat(entity.state);
     const score = Math.round(rawScore * 10);
     
-    // Get weather and marine details
     const weatherEntityId = this.findWeatherEntity();
     const weatherDetails = this.getWeatherDetails(this._hass, weatherEntityId);
     const marineDetails = this.getMarineDetails(this._hass, attrs.location);
     
-    // Determine score color
     const getScoreColor = (score) => {
-      if (score >= 70) return '#4caf50'; // Green
-      if (score >= 40) return '#ff9800'; // Orange
-      return '#f44336'; // Red
+      if (score >= 70) return '#4caf50';
+      if (score >= 40) return '#ff9800';
+      return '#f44336';
     };
 
     const getScoreLabel = (score) => {
@@ -157,7 +148,6 @@ class FishingAssistantCard extends HTMLElement {
       return 'Poor';
     };
 
-    // Get tide emoji
     const getTideEmoji = (tide) => {
       const tideMap = {
         'high_tide': '🌊',
@@ -170,7 +160,6 @@ class FishingAssistantCard extends HTMLElement {
       return tideMap[tide] || '〰️';
     };
 
-    // Get safety emoji
     const getSafetyEmoji = (safety) => {
       const safetyMap = {
         'safe': '✅',
@@ -183,7 +172,6 @@ class FishingAssistantCard extends HTMLElement {
     const scoreColor = getScoreColor(score);
     const scoreLabel = getScoreLabel(score);
 
-    // Get component scores
     const componentScores = attrs.breakdown?.component_scores || {};
     const weights = attrs.breakdown?.weights || {};
 
@@ -453,6 +441,14 @@ class FishingAssistantCard extends HTMLElement {
           font-weight: bold;
           color: var(--primary-text-color);
         }
+        .block-conditions {
+          font-size: 10px;
+          margin-top: 4px;
+          display: flex;
+          justify-content: center;
+          gap: 4px;
+          flex-wrap: wrap;
+        }
         .block-tide {
           font-size: 12px;
           margin-top: 4px;
@@ -652,6 +648,14 @@ class FishingAssistantCard extends HTMLElement {
               </div>
             ` : ''}
             
+            ${weatherDetails?.cloud_cover !== undefined ? `
+              <div class="condition-item">
+                <div class="condition-icon">${weatherDetails.cloud_cover < 30 ? '☀️' : weatherDetails.cloud_cover < 70 ? '⛅' : '☁️'}</div>
+                <div class="condition-label">Cloud Cover</div>
+                <div class="condition-value">${weatherDetails.cloud_cover}%</div>
+              </div>
+            ` : ''}
+            
             ${weatherDetails?.pressure ? `
               <div class="condition-item">
                 <div class="condition-icon">🌡️</div>
@@ -691,13 +695,12 @@ class FishingAssistantCard extends HTMLElement {
                 ${this._expandedDays.size > 0 ? 'Collapse All' : 'Expand All'}
               </div>
             </div>
-            ${this.renderForecast(attrs.forecast, config.forecast_days, weatherDetails, marineDetails)}
+            ${this.renderForecast(attrs.forecast, config.forecast_days)}
           </div>
         ` : ''}
       </ha-card>
     `;
 
-    // Add event listeners for day toggles
     this.shadowRoot.querySelectorAll('.day-header').forEach(header => {
       header.addEventListener('click', (e) => {
         const date = e.currentTarget.dataset.date;
@@ -705,7 +708,6 @@ class FishingAssistantCard extends HTMLElement {
       });
     });
 
-    // Add event listeners for time block clicks
     this.shadowRoot.querySelectorAll('.time-block').forEach(block => {
       block.addEventListener('click', (e) => {
         const dayDate = e.currentTarget.dataset.day;
@@ -715,7 +717,6 @@ class FishingAssistantCard extends HTMLElement {
       });
     });
 
-    // Add event listener for backdrop click to close popup
     const backdrop = this.shadowRoot.querySelector('.popup-backdrop');
     if (backdrop) {
       backdrop.addEventListener('click', () => {
@@ -724,16 +725,13 @@ class FishingAssistantCard extends HTMLElement {
       });
     }
 
-    // Update popup visibility after render
     this.updatePopups();
   }
 
   findWeatherEntity() {
-    // Try to find the weather entity from the main sensor's config
     const entity = this._hass.states[this.config.entity];
     if (!entity) return null;
     
-    // Look for weather entity in related sensors
     const locationName = entity.attributes.location?.toLowerCase().replace(' ', '_');
     const possibleWeatherEntities = Object.keys(this._hass.states).filter(eid => 
       eid.startsWith('weather.') && eid.includes(locationName)
@@ -755,8 +753,7 @@ class FishingAssistantCard extends HTMLElement {
     this.render(entity);
   }
 
-  renderForecast(forecast, maxDays = 5, weatherDetails, marineDetails) {
-    // Convert nested forecast object to array
+  renderForecast(forecast, maxDays = 5) {
     const days = Object.entries(forecast)
       .slice(0, maxDays)
       .map(([date, dayData]) => ({
@@ -801,6 +798,10 @@ class FishingAssistantCard extends HTMLElement {
               const detailsKey = `${day.date}-${period.key}`;
               const safetyReasons = period.safety_reasons || ['Check local conditions'];
               
+              // Get period-specific weather and marine data
+              const periodWeather = period.weather || {};
+              const periodMarine = period.marine || {};
+              
               return `
                 <div class="time-block ${scoreClass} ${safetyClass}" 
                      data-day="${day.date}" 
@@ -808,7 +809,13 @@ class FishingAssistantCard extends HTMLElement {
                      data-period='${JSON.stringify(period)}'>
                   <div class="block-time">${period.time_block}</div>
                   <div class="block-score">${score}</div>
-                  <div class="block-tide">${getTideEmoji(period.tide_state)} ${period.tide_state.replace(/_/g, ' ')}</div>
+                  <div class="block-conditions">
+                    ${periodWeather.wind_speed ? `💨${Math.round(periodWeather.wind_speed)}` : ''}
+                    ${periodWeather.cloud_cover !== undefined ? 
+                      (periodWeather.cloud_cover < 30 ? '☀️' : periodWeather.cloud_cover < 70 ? '⛅' : '☁️') : ''}
+                    ${periodMarine.wave_height ? `🌊${parseFloat(periodMarine.wave_height).toFixed(1)}m` : ''}
+                  </div>
+                  <div class="block-tide">${getTideEmoji(period.tide_state)}</div>
                   <div class="block-safety" style="color: ${safetyColor};">${period.safety}</div>
                 </div>
                 
@@ -831,45 +838,57 @@ class FishingAssistantCard extends HTMLElement {
                       <span class="detail-label">Tide:</span>
                       <span class="detail-value">${period.tide_state.replace(/_/g, ' ')}</span>
                     </div>
-                    ${marineDetails?.wave_height ? `
+                    ${periodMarine.wave_height ? `
                       <div class="detail-row">
                         <span class="detail-label">Wave Height:</span>
-                        <span class="detail-value">${parseFloat(marineDetails.wave_height).toFixed(1)}m</span>
+                        <span class="detail-value">${parseFloat(periodMarine.wave_height).toFixed(1)}m</span>
                       </div>
                     ` : ''}
-                    ${marineDetails?.wave_period ? `
+                    ${periodMarine.wave_period ? `
                       <div class="detail-row">
                         <span class="detail-label">Wave Period:</span>
-                        <span class="detail-value">${marineDetails.wave_period}s</span>
+                        <span class="detail-value">${periodMarine.wave_period}s</span>
+                      </div>
+                    ` : ''}
+                    ${periodMarine.tide_strength ? `
+                      <div class="detail-row">
+                        <span class="detail-label">Tide Strength:</span>
+                        <span class="detail-value">${periodMarine.tide_strength}</span>
                       </div>
                     ` : ''}
                   </div>
                   
-                  ${weatherDetails ? `
+                  ${Object.keys(periodWeather).length > 0 ? `
                     <div class="detail-section">
                       <div class="detail-section-title">🌤️ Weather</div>
-                      ${weatherDetails.wind_speed ? `
+                      ${periodWeather.wind_speed ? `
                         <div class="detail-row">
                           <span class="detail-label">Wind:</span>
-                          <span class="detail-value">${Math.round(weatherDetails.wind_speed)} km/h</span>
+                          <span class="detail-value">${Math.round(periodWeather.wind_speed)} km/h</span>
                         </div>
                       ` : ''}
-                      ${weatherDetails.wind_gust ? `
+                      ${periodWeather.wind_gust ? `
                         <div class="detail-row">
                           <span class="detail-label">Gusts:</span>
-                          <span class="detail-value">${Math.round(weatherDetails.wind_gust)} km/h</span>
+                          <span class="detail-value">${Math.round(periodWeather.wind_gust)} km/h</span>
                         </div>
                       ` : ''}
-                      ${weatherDetails.pressure ? `
+                      ${periodWeather.pressure ? `
                         <div class="detail-row">
                           <span class="detail-label">Pressure:</span>
-                          <span class="detail-value">${Math.round(weatherDetails.pressure)} hPa</span>
+                          <span class="detail-value">${Math.round(periodWeather.pressure)} hPa</span>
                         </div>
                       ` : ''}
-                      ${weatherDetails.cloud_cover !== undefined ? `
+                      ${periodWeather.cloud_cover !== undefined ? `
                         <div class="detail-row">
                           <span class="detail-label">Cloud Cover:</span>
-                          <span class="detail-value">${weatherDetails.cloud_cover}%</span>
+                          <span class="detail-value">${periodWeather.cloud_cover}%</span>
+                        </div>
+                      ` : ''}
+                      ${periodWeather.temperature ? `
+                        <div class="detail-row">
+                          <span class="detail-label">Temperature:</span>
+                          <span class="detail-value">${Math.round(periodWeather.temperature)}°C</span>
                         </div>
                       ` : ''}
                     </div>
@@ -906,7 +925,6 @@ class FishingAssistantCard extends HTMLElement {
   }
 }
 
-// Visual Editor Component
 class FishingAssistantCardEditor extends HTMLElement {
   constructor() {
     super();
@@ -951,7 +969,6 @@ class FishingAssistantCardEditor extends HTMLElement {
       return;
     }
 
-    // Get all fishing assistant sensor entities
     const entities = Object.keys(this._hass.states)
       .filter(eid => eid.startsWith('sensor.') && 
               (eid.includes('fishing') || 
@@ -1073,14 +1090,12 @@ class FishingAssistantCardEditor extends HTMLElement {
       </div>
     `;
 
-    // Entity select
     const select = this.querySelector('#entity-select');
     select.addEventListener('change', (ev) => {
       this._config = { ...this._config, entity: ev.target.value };
       this.configChanged(this._config);
     });
 
-    // Checkboxes
     const showCurrent = this.querySelector('#show-current');
     showCurrent.addEventListener('change', (ev) => {
       this._config = { ...this._config, show_current_conditions: ev.target.checked };
@@ -1111,7 +1126,6 @@ class FishingAssistantCardEditor extends HTMLElement {
       this.configChanged(this._config);
     });
 
-    // Forecast days
     const forecastDays = this.querySelector('#forecast-days');
     forecastDays.addEventListener('change', (ev) => {
       this._config = { ...this._config, forecast_days: parseInt(ev.target.value) };
