@@ -11,7 +11,7 @@ class FishingAssistantCard extends HTMLElement {
   }
 
   static getStubConfig() {
-    return { 
+    return {
       entity: '',
       show_forecast: true,
       show_current_conditions: true,
@@ -40,7 +40,7 @@ class FishingAssistantCard extends HTMLElement {
   set hass(hass) {
     this._hass = hass;
     const entity = hass.states[this.config.entity];
-    
+
     if (!entity) {
       this.shadowRoot.innerHTML = `
         <ha-card>
@@ -65,13 +65,13 @@ class FishingAssistantCard extends HTMLElement {
   showBlockDetails(event, dayDate, blockName, period) {
     event.stopPropagation();
     const detailsKey = `${dayDate}-${blockName}`;
-    
+
     if (this._showDetails === detailsKey) {
       this._showDetails = null;
     } else {
       this._showDetails = detailsKey;
     }
-    
+
     this.updatePopups();
   }
 
@@ -79,12 +79,12 @@ class FishingAssistantCard extends HTMLElement {
     this.shadowRoot.querySelectorAll('.block-details').forEach(popup => {
       popup.style.display = 'none';
     });
-    
+
     const backdrop = this.shadowRoot.querySelector('.popup-backdrop');
     if (backdrop) {
       backdrop.classList.remove('active');
     }
-    
+
     if (this._showDetails) {
       const activePopup = this.shadowRoot.querySelector(`[data-details-key="${this._showDetails}"]`);
       if (activePopup) {
@@ -100,7 +100,7 @@ class FishingAssistantCard extends HTMLElement {
     if (!weatherEntityId) return null;
     const weatherState = hass.states[weatherEntityId];
     if (!weatherState) return null;
-    
+
     return {
       wind_speed: weatherState.attributes.wind_speed,
       wind_gust: weatherState.attributes.wind_gust_speed || weatherState.attributes.wind_speed,
@@ -114,33 +114,34 @@ class FishingAssistantCard extends HTMLElement {
   getMarineDetails(hass, entity) {
     // Use location_key if available, otherwise fall back to location name
     const locationKey = entity.attributes.location_key || entity.attributes.location?.toLowerCase().replace(' ', '_');
-    
+
     if (!locationKey) return {};
-    
+
     const waveHeightEntity = hass.states[`sensor.${locationKey}_wave_height`];
     const wavePeriodEntity = hass.states[`sensor.${locationKey}_wave_period`];
     const tideStateEntity = hass.states[`sensor.${locationKey}_tide_state`];
     const tideStrengthEntity = hass.states[`sensor.${locationKey}_tide_strength`];
-    
+
     return {
       wave_height: waveHeightEntity?.state,
       wave_period: wavePeriodEntity?.state,
       tide_state: tideStateEntity?.state,
       tide_strength: tideStrengthEntity?.state,
+      next_high_tide: tideStateEntity?.attributes?.next_high,
     };
   }
 
   render(entity) {
     const attrs = entity.attributes;
     const config = this.config;
-    
+
     const rawScore = parseFloat(entity.state);
     const score = Math.round(rawScore * 10);
-    
+
     const weatherEntityId = this.findWeatherEntity();
     const weatherDetails = this.getWeatherDetails(this._hass, weatherEntityId);
     const marineDetails = this.getMarineDetails(this._hass, entity);
-    
+
     const getScoreColor = (score) => {
       if (score >= 70) return '#4caf50';
       if (score >= 40) return '#ff9800';
@@ -575,7 +576,7 @@ class FishingAssistantCard extends HTMLElement {
 
       <ha-card>
         <div class="popup-backdrop ${this._showDetails ? 'active' : ''}"></div>
-        
+
         <div class="header">
           <div>
             <div class="title">🎣 Fishing Assistant</div>
@@ -620,7 +621,7 @@ class FishingAssistantCard extends HTMLElement {
                 <div class="condition-value">${attrs.species_focus}</div>
               </div>
             ` : ''}
-            
+
             ${attrs.tide_state ? `
               <div class="condition-item">
                 <div class="condition-icon">${getTideEmoji(attrs.tide_state)}</div>
@@ -628,7 +629,7 @@ class FishingAssistantCard extends HTMLElement {
                 <div class="condition-value">${attrs.tide_state.replace(/_/g, ' ')}</div>
               </div>
             ` : ''}
-            
+
             ${attrs.safety ? `
               <div class="condition-item">
                 <div class="condition-icon">${getSafetyEmoji(attrs.safety)}</div>
@@ -636,7 +637,7 @@ class FishingAssistantCard extends HTMLElement {
                 <div class="condition-value">${attrs.safety}</div>
               </div>
             ` : ''}
-            
+
             ${weatherDetails?.wind_speed ? `
               <div class="condition-item">
                 <div class="condition-icon">💨</div>
@@ -644,7 +645,7 @@ class FishingAssistantCard extends HTMLElement {
                 <div class="condition-value">${Math.round(weatherDetails.wind_speed)} km/h</div>
               </div>
             ` : ''}
-            
+
             ${marineDetails?.wave_height ? `
               <div class="condition-item">
                 <div class="condition-icon">🌊</div>
@@ -652,7 +653,23 @@ class FishingAssistantCard extends HTMLElement {
                 <div class="condition-value">${parseFloat(marineDetails.wave_height).toFixed(1)}m</div>
               </div>
             ` : ''}
-            
+
+            ${weatherDetails?.wind_speed ? `
+              <div class="condition-item">
+                <div class="condition-icon">💨</div>
+                <div class="condition-label">Wind Speed</div>
+                <div class="condition-value">${Math.round(weatherDetails.wind_speed)} km/h</div>
+              </div>
+            ` : ''}
+
+            ${marineDetails?.next_high_tide ? `
+              <div class="condition-item">
+                <div class="condition-icon">⏰</div>
+                <div class="condition-label">Next High Tide</div>
+                <div class="condition-value">${new Date(marineDetails.next_high_tide).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}</div>
+              </div>
+            ` : ''}
+
             ${weatherDetails?.cloud_cover !== undefined ? `
               <div class="condition-item">
                 <div class="condition-icon">${weatherDetails.cloud_cover < 30 ? '☀️' : weatherDetails.cloud_cover < 70 ? '⛅' : '☁️'}</div>
@@ -660,7 +677,7 @@ class FishingAssistantCard extends HTMLElement {
                 <div class="condition-value">${weatherDetails.cloud_cover}%</div>
               </div>
             ` : ''}
-            
+
             ${weatherDetails?.pressure ? `
               <div class="condition-item">
                 <div class="condition-icon">🌡️</div>
@@ -736,27 +753,27 @@ class FishingAssistantCard extends HTMLElement {
   findWeatherEntity() {
     const entity = this._hass.states[this.config.entity];
     if (!entity) return null;
-    
+
     const locationKey = entity.attributes.location_key || entity.attributes.location?.toLowerCase().replace(' ', '_');
     if (!locationKey) return null;
-    
-    const possibleWeatherEntities = Object.keys(this._hass.states).filter(eid => 
+
+    const possibleWeatherEntities = Object.keys(this._hass.states).filter(eid =>
       eid.startsWith('weather.') && eid.includes(locationKey)
     );
-    
+
     return possibleWeatherEntities[0] || null;
   }
 
   toggleAllDays() {
     const entity = this._hass.states[this.config.entity];
     const forecast = entity.attributes.forecast;
-    
+
     if (this._expandedDays.size > 0) {
       this._expandedDays.clear();
     } else {
       Object.keys(forecast).forEach(date => this._expandedDays.add(date));
     }
-    
+
     this.render(entity);
   }
 
@@ -786,7 +803,7 @@ class FishingAssistantCard extends HTMLElement {
       const periods = Object.entries(day.periods).map(([key, period]) => ({ ...period, key }));
       const avgScore = Math.round(day.daily_avg_score * 10);
       const isExpanded = this._expandedDays.has(day.date) || this.config.expand_forecast;
-      
+
       return `
         <div class="forecast-day">
           <div class="day-header" data-date="${day.date}">
@@ -804,28 +821,28 @@ class FishingAssistantCard extends HTMLElement {
               const safetyColor = period.safety === 'unsafe' ? '#f44336' : period.safety === 'caution' ? '#ff9800' : '#4caf50';
               const detailsKey = `${day.date}-${period.key}`;
               const safetyReasons = period.safety_reasons || ['Check local conditions'];
-              
+
               // Get period-specific weather and marine data
               const periodWeather = period.weather || {};
               const periodMarine = period.marine || {};
-              
+
               return `
-                <div class="time-block ${scoreClass} ${safetyClass}" 
-                     data-day="${day.date}" 
+                <div class="time-block ${scoreClass} ${safetyClass}"
+                     data-day="${day.date}"
                      data-block="${period.key}"
                      data-period='${JSON.stringify(period)}'>
                   <div class="block-time">${period.time_block}</div>
                   <div class="block-score">${score}</div>
                   <div class="block-conditions">
                     ${periodWeather.wind_speed ? `💨${Math.round(periodWeather.wind_speed)}` : ''}
-                    ${periodWeather.cloud_cover !== undefined ? 
+                    ${periodWeather.cloud_cover !== undefined ?
                       (periodWeather.cloud_cover < 30 ? '☀️' : periodWeather.cloud_cover < 70 ? '⛅' : '☁️') : ''}
                     ${periodMarine.wave_height ? `🌊${parseFloat(periodMarine.wave_height).toFixed(1)}m` : ''}
                   </div>
                   <div class="block-tide">${getTideEmoji(period.tide_state)}</div>
                   <div class="block-safety" style="color: ${safetyColor};">${period.safety}</div>
                 </div>
-                
+
                 <div class="block-details" data-details-key="${detailsKey}">
                   <div class="detail-section">
                     <div class="detail-section-title">⚡ Conditions</div>
@@ -838,7 +855,7 @@ class FishingAssistantCard extends HTMLElement {
                       <span class="detail-value">${score}/100</span>
                     </div>
                   </div>
-                  
+
                   <div class="detail-section">
                     <div class="detail-section-title">🌊 Marine</div>
                     <div class="detail-row">
@@ -864,7 +881,7 @@ class FishingAssistantCard extends HTMLElement {
                       </div>
                     ` : ''}
                   </div>
-                  
+
                   ${Object.keys(periodWeather).length > 0 ? `
                     <div class="detail-section">
                       <div class="detail-section-title">🌤️ Weather</div>
@@ -900,7 +917,7 @@ class FishingAssistantCard extends HTMLElement {
                       ` : ''}
                     </div>
                   ` : ''}
-                  
+
                   ${period.safety === 'unsafe' ? `
                     <div class="detail-warning">
                       ⚠️ UNSAFE CONDITIONS<br>
@@ -916,7 +933,7 @@ class FishingAssistantCard extends HTMLElement {
                       ✅ ${safetyReasons[0]}
                     </div>
                   `}
-                  
+
                   <div class="close-hint">Click anywhere to close</div>
                 </div>
               `;
@@ -939,14 +956,14 @@ class FishingAssistantCardEditor extends HTMLElement {
   }
 
   setConfig(config) {
-    this._config = { 
+    this._config = {
       show_forecast: true,
       show_current_conditions: true,
       compact_mode: false,
       forecast_days: 5,
       expand_forecast: false,
       show_component_scores: true,
-      ...config 
+      ...config
     };
     if (!this.rendered) {
       this.render();
@@ -977,8 +994,8 @@ class FishingAssistantCardEditor extends HTMLElement {
     }
 
     const entities = Object.keys(this._hass.states)
-      .filter(eid => eid.startsWith('sensor.') && 
-              (eid.includes('fishing') || 
+      .filter(eid => eid.startsWith('sensor.') &&
+              (eid.includes('fishing') ||
                this._hass.states[eid].attributes.species_focus))
       .sort();
 
@@ -1041,7 +1058,7 @@ class FishingAssistantCardEditor extends HTMLElement {
           font-weight: normal;
         }
       </style>
-      
+
       <div class="config-section">
         <div class="section-title">Entity</div>
         <div class="config-row">
@@ -1060,27 +1077,27 @@ class FishingAssistantCardEditor extends HTMLElement {
 
       <div class="config-section">
         <div class="section-title">Display Options</div>
-        
+
         <div class="checkbox-row">
           <input type="checkbox" id="show-current" ${this._config.show_current_conditions ? 'checked' : ''}>
           <label for="show-current">Show Current Conditions</label>
         </div>
-        
+
         <div class="checkbox-row">
           <input type="checkbox" id="show-component" ${this._config.show_component_scores ? 'checked' : ''}>
           <label for="show-component">Show Component Score Breakdown</label>
         </div>
-        
+
         <div class="checkbox-row">
           <input type="checkbox" id="show-forecast" ${this._config.show_forecast ? 'checked' : ''}>
           <label for="show-forecast">Show Forecast</label>
         </div>
-        
+
         <div class="checkbox-row">
           <input type="checkbox" id="compact-mode" ${this._config.compact_mode ? 'checked' : ''}>
           <label for="compact-mode">Compact Mode</label>
         </div>
-        
+
         <div class="checkbox-row">
           <input type="checkbox" id="expand-forecast" ${this._config.expand_forecast ? 'checked' : ''}>
           <label for="expand-forecast">Expand Forecast by Default</label>
