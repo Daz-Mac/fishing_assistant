@@ -1084,8 +1084,8 @@ class FishingAssistantCardEditor extends HTMLElement {
         <div class="section-title">Forecast Settings</div>
         <div class="config-row">
           <label for="forecast-days">Number of Forecast Days</label>
-          <input type="number" id="forecast-days" min="1" max="7" value="${this._config.forecast_days || 5}">
-          <div class="hint">Show 1-7 days of forecast (default: 5)</div>
+          <input type="number" id="forecast-days" min="1" max="5" value="${this._config.forecast_days || 5}">
+          <div class="hint">Show 1-5 days of forecast (default: 5)</div>
         </div>
       </div>
     `;
