@@ -82,6 +82,10 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
     lon = data["longitude"]
     weather_entity = data.get(CONF_WEATHER_ENTITY)
 
+    # Create a location key based on coordinates for sensor naming consistency
+    # This ensures all sensors at the same location share the same base name
+    location_key = f"{name.lower().replace(' ', '_')}"
+
     # Initialize data fetchers
     tide_proxy = None
     marine_fetcher = None
@@ -99,6 +103,7 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
             config_entry=config_entry,
             tide_proxy=tide_proxy,
             marine_fetcher=marine_fetcher,
+            location_key=location_key,
         )
     )
 
@@ -109,6 +114,7 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
                 hass=hass,
                 config_entry=config_entry,
                 tide_proxy=tide_proxy,
+                location_key=location_key,
             )
         )
         sensors.append(
@@ -116,6 +122,7 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
                 hass=hass,
                 config_entry=config_entry,
                 tide_proxy=tide_proxy,
+                location_key=location_key,
             )
         )
 
@@ -126,6 +133,7 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
                 hass=hass,
                 config_entry=config_entry,
                 marine_fetcher=marine_fetcher,
+                location_key=location_key,
             )
         )
         sensors.append(
@@ -133,6 +141,7 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
                 hass=hass,
                 config_entry=config_entry,
                 marine_fetcher=marine_fetcher,
+                location_key=location_key,
             )
         )
 
@@ -142,12 +151,14 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
             WindSpeedSensor(
                 hass=hass,
                 config_entry=config_entry,
+                location_key=location_key,
             )
         )
         sensors.append(
             WindGustSensor(
                 hass=hass,
                 config_entry=config_entry,
+                location_key=location_key,
             )
         )
 
@@ -260,7 +271,7 @@ class OceanFishingScoreSensor(SensorEntity):
 
     should_poll = True
 
-    def __init__(self, hass, config_entry, tide_proxy, marine_fetcher):
+    def __init__(self, hass, config_entry, tide_proxy, marine_fetcher, location_key):
         """Initialize the ocean fishing score sensor."""
         self.hass = hass
         self._config_entry = config_entry
@@ -281,6 +292,7 @@ class OceanFishingScoreSensor(SensorEntity):
 
         self._attrs = {
             "location": name,
+            "location_key": location_key,  # Technical key for sensor lookups
             "latitude": lat,
             "longitude": lon,
             "mode": "ocean",
@@ -452,7 +464,7 @@ class TideStateSensor(SensorEntity):
 
     should_poll = True
 
-    def __init__(self, hass, config_entry, tide_proxy):
+    def __init__(self, hass, config_entry, tide_proxy, location_key):
         """Initialize the tide state sensor."""
         self.hass = hass
         self._config_entry = config_entry
@@ -462,7 +474,7 @@ class TideStateSensor(SensorEntity):
         name = data["name"]
 
         self._device_identifier = f"{name}_{data['latitude']}_{data['longitude']}_ocean"
-        self._name = f"{name.lower().replace(' ', '_')}_tide_state"
+        self._name = f"{location_key}_tide_state"
         self._friendly_name = f"{name} Tide State"
         self._state = None
         self._attrs = {}
@@ -524,7 +536,7 @@ class TideStrengthSensor(SensorEntity):
 
     should_poll = True
 
-    def __init__(self, hass, config_entry, tide_proxy):
+    def __init__(self, hass, config_entry, tide_proxy, location_key):
         """Initialize the tide strength sensor."""
         self.hass = hass
         self._config_entry = config_entry
@@ -534,7 +546,7 @@ class TideStrengthSensor(SensorEntity):
         name = data["name"]
 
         self._device_identifier = f"{name}_{data['latitude']}_{data['longitude']}_ocean"
-        self._name = f"{name.lower().replace(' ', '_')}_tide_strength"
+        self._name = f"{location_key}_tide_strength"
         self._friendly_name = f"{name} Tide Strength"
         self._state = None
 
@@ -585,7 +597,7 @@ class WaveHeightSensor(SensorEntity):
 
     should_poll = True
 
-    def __init__(self, hass, config_entry, marine_fetcher):
+    def __init__(self, hass, config_entry, marine_fetcher, location_key):
         """Initialize the wave height sensor."""
         self.hass = hass
         self._config_entry = config_entry
@@ -595,7 +607,7 @@ class WaveHeightSensor(SensorEntity):
         name = data["name"]
 
         self._device_identifier = f"{name}_{data['latitude']}_{data['longitude']}_ocean"
-        self._name = f"{name.lower().replace(' ', '_')}_wave_height"
+        self._name = f"{location_key}_wave_height"
         self._friendly_name = f"{name} Wave Height"
         self._state = None
         self._attrs = {}
@@ -661,7 +673,7 @@ class WavePeriodSensor(SensorEntity):
 
     should_poll = True
 
-    def __init__(self, hass, config_entry, marine_fetcher):
+    def __init__(self, hass, config_entry, marine_fetcher, location_key):
         """Initialize the wave period sensor."""
         self.hass = hass
         self._config_entry = config_entry
@@ -671,7 +683,7 @@ class WavePeriodSensor(SensorEntity):
         name = data["name"]
 
         self._device_identifier = f"{name}_{data['latitude']}_{data['longitude']}_ocean"
-        self._name = f"{name.lower().replace(' ', '_')}_wave_period"
+        self._name = f"{location_key}_wave_period"
         self._friendly_name = f"{name} Wave Period"
         self._state = None
 
@@ -722,7 +734,7 @@ class WindSpeedSensor(SensorEntity):
 
     should_poll = True
 
-    def __init__(self, hass, config_entry):
+    def __init__(self, hass, config_entry, location_key):
         """Initialize the wind speed sensor."""
         self.hass = hass
         self._config_entry = config_entry
@@ -731,7 +743,7 @@ class WindSpeedSensor(SensorEntity):
         name = data["name"]
 
         self._device_identifier = f"{name}_{data['latitude']}_{data['longitude']}_ocean"
-        self._name = f"{name.lower().replace(' ', '_')}_wind_speed"
+        self._name = f"{location_key}_wind_speed"
         self._friendly_name = f"{name} Wind Speed"
         self._state = None
 
@@ -800,7 +812,7 @@ class WindGustSensor(SensorEntity):
 
     should_poll = True
 
-    def __init__(self, hass, config_entry):
+    def __init__(self, hass, config_entry, location_key):
         """Initialize the wind gust sensor."""
         self.hass = hass
         self._config_entry = config_entry
@@ -809,7 +821,7 @@ class WindGustSensor(SensorEntity):
         name = data["name"]
 
         self._device_identifier = f"{name}_{data['latitude']}_{data['longitude']}_ocean"
-        self._name = f"{name.lower().replace(' ', '_')}_wind_gust"
+        self._name = f"{location_key}_wind_gust"
         self._friendly_name = f"{name} Wind Gust"
         self._state = None
 

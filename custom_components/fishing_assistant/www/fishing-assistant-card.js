@@ -111,11 +111,16 @@ class FishingAssistantCard extends HTMLElement {
     };
   }
 
-  getMarineDetails(hass, locationName) {
-    const waveHeightEntity = hass.states[`sensor.${locationName.toLowerCase().replace(' ', '_')}_wave_height`];
-    const wavePeriodEntity = hass.states[`sensor.${locationName.toLowerCase().replace(' ', '_')}_wave_period`];
-    const tideStateEntity = hass.states[`sensor.${locationName.toLowerCase().replace(' ', '_')}_tide_state`];
-    const tideStrengthEntity = hass.states[`sensor.${locationName.toLowerCase().replace(' ', '_')}_tide_strength`];
+  getMarineDetails(hass, entity) {
+    // Use location_key if available, otherwise fall back to location name
+    const locationKey = entity.attributes.location_key || entity.attributes.location?.toLowerCase().replace(' ', '_');
+    
+    if (!locationKey) return {};
+    
+    const waveHeightEntity = hass.states[`sensor.${locationKey}_wave_height`];
+    const wavePeriodEntity = hass.states[`sensor.${locationKey}_wave_period`];
+    const tideStateEntity = hass.states[`sensor.${locationKey}_tide_state`];
+    const tideStrengthEntity = hass.states[`sensor.${locationKey}_tide_strength`];
     
     return {
       wave_height: waveHeightEntity?.state,
@@ -134,7 +139,7 @@ class FishingAssistantCard extends HTMLElement {
     
     const weatherEntityId = this.findWeatherEntity();
     const weatherDetails = this.getWeatherDetails(this._hass, weatherEntityId);
-    const marineDetails = this.getMarineDetails(this._hass, attrs.location);
+    const marineDetails = this.getMarineDetails(this._hass, entity);
     
     const getScoreColor = (score) => {
       if (score >= 70) return '#4caf50';
@@ -732,9 +737,11 @@ class FishingAssistantCard extends HTMLElement {
     const entity = this._hass.states[this.config.entity];
     if (!entity) return null;
     
-    const locationName = entity.attributes.location?.toLowerCase().replace(' ', '_');
+    const locationKey = entity.attributes.location_key || entity.attributes.location?.toLowerCase().replace(' ', '_');
+    if (!locationKey) return null;
+    
     const possibleWeatherEntities = Object.keys(this._hass.states).filter(eid => 
-      eid.startsWith('weather.') && eid.includes(locationName)
+      eid.startsWith('weather.') && eid.includes(locationKey)
     );
     
     return possibleWeatherEntities[0] || null;
