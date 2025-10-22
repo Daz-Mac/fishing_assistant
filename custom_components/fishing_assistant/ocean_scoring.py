@@ -7,6 +7,7 @@ from .const import (
     CONF_SPECIES_ID,
     CONF_SPECIES_REGION,
     CONF_HABITAT_PRESET,
+    CONF_TIME_PERIODS,
     HABITAT_PRESETS,
     TIDE_STATE_RISING,
     TIDE_STATE_FALLING,
@@ -16,6 +17,9 @@ from .const import (
     LIGHT_DAY,
     LIGHT_DUSK,
     LIGHT_NIGHT,
+    TIME_PERIODS_FULL_DAY,
+    TIME_PERIODS_DAWN_DUSK,
+    TIME_PERIOD_DEFINITIONS,
 )
 from .species_loader import SpeciesLoader
 
@@ -217,13 +221,9 @@ class OceanFishingScorer:
             # Get marine forecast
             marine_forecast = marine_data.get("forecast", {})
             
-            # Time blocks for each day
-            time_blocks = [
-                {"name": "morning", "start_hour": 6, "end_hour": 12},
-                {"name": "afternoon", "start_hour": 12, "end_hour": 18},
-                {"name": "evening", "start_hour": 18, "end_hour": 24},
-                {"name": "night", "start_hour": 0, "end_hour": 6},
-            ]
+            # Get time period configuration
+            time_period_mode = self.config.get(CONF_TIME_PERIODS, TIME_PERIODS_FULL_DAY)
+            time_period_def = TIME_PERIOD_DEFINITIONS.get(time_period_mode, TIME_PERIOD_DEFINITIONS[TIME_PERIODS_FULL_DAY])
             
             # Get current time for filtering past periods
             now = datetime.now()
@@ -246,6 +246,9 @@ class OceanFishingScorer:
                 # Get marine forecast for this day
                 day_marine = marine_forecast.get(date_key, {})
                 
+                # Get time blocks for this day (may need astro data for dawn/dusk)
+                time_blocks = await self._get_time_blocks_for_date(target_date, time_period_def)
+                
                 # Calculate score for each time block
                 for block in time_blocks:
                     # Skip past/current periods for today (hybrid approach)
@@ -254,7 +257,10 @@ class OceanFishingScorer:
                         # Night period (0-6) is always shown for today as it represents tonight
                         block_start_time = datetime.combine(
                             target_date,
-                            datetime.min.time().replace(hour=block["start_hour"])
+                            datetime.min.time().replace(
+                                hour=block["start_hour"],
+                                minute=block.get("start_minute", 0)
+                            )
                         )
                         
                         # Skip if this period has already started (we're in it or past it)
@@ -267,7 +273,10 @@ class OceanFishingScorer:
                     
                     target_time = datetime.combine(
                         target_date,
-                        datetime.min.time().replace(hour=block["start_hour"])
+                        datetime.min.time().replace(
+                            hour=block["start_hour"],
+                            minute=block.get("start_minute", 0)
+                        )
                     )
                     
                     # Get tide data for this time
@@ -303,9 +312,14 @@ class OceanFishingScorer:
                         target_time=target_time,
                     )
                     
+                    # Format time range
+                    start_min = block.get("start_minute", 0)
+                    end_min = block.get("end_minute", 0)
+                    hours_display = f"{block['start_hour']:02d}:{start_min:02d}-{block['end_hour']:02d}:{end_min:02d}"
+                    
                     forecast[date_key]["periods"][block["name"]] = {
                         "time_block": block["name"],
-                        "hours": f"{block['start_hour']:02d}:00-{block['end_hour']:02d}:00",
+                        "hours": hours_display,
                         "score": result["score"],
                         "safety": result["safety"],
                         "safety_reasons": result.get("safety_reasons", []),
@@ -416,6 +430,54 @@ class OceanFishingScorer:
             astro["moon_phase"] = 0.5
         
         return astro
+
+    async def _get_time_blocks_for_date(self, target_date, time_period_def: Dict) -> List[Dict]:
+        """Get time blocks for a specific date based on time period configuration."""
+        periods = time_period_def.get("periods", [])
+        time_blocks = []
+        
+        for period in periods:
+            if "relative_to" in period:
+                # Dawn/Dusk mode - calculate based on sunrise/sunset
+                # Get astro data for this date
+                target_time = datetime.combine(target_date, datetime.min.time().replace(hour=12))
+                astro_data = await self._get_astro_for_time(target_time)
+                
+                relative_to = period["relative_to"]
+                offset_before = period.get("offset_before", 60)  # minutes
+                offset_after = period.get("offset_after", 60)  # minutes
+                
+                if relative_to == "sunrise":
+                    reference_time = astro_data.get("sunrise")
+                elif relative_to == "sunset":
+                    reference_time = astro_data.get("sunset")
+                else:
+                    continue
+                
+                if reference_time:
+                    start_time = reference_time - timedelta(minutes=offset_before)
+                    end_time = reference_time + timedelta(minutes=offset_after)
+                    
+                    time_blocks.append({
+                        "name": period["name"],
+                        "start_hour": start_time.hour,
+                        "start_minute": start_time.minute,
+                        "end_hour": end_time.hour,
+                        "end_minute": end_time.minute,
+                        "is_relative": True,
+                    })
+            else:
+                # Full day mode - use fixed hours
+                time_blocks.append({
+                    "name": period["name"],
+                    "start_hour": period["start_hour"],
+                    "start_minute": 0,
+                    "end_hour": period["end_hour"],
+                    "end_minute": 0,
+                    "is_relative": False,
+                })
+        
+        return time_blocks
 
     def _determine_light_condition(self, astro_data: Dict, current_time: datetime = None) -> str:
         """Determine light condition for a specific time."""

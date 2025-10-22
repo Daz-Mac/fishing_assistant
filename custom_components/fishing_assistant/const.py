@@ -26,6 +26,7 @@ CONF_TIDE_SENSOR = "tide_sensor"
 CONF_AUTO_APPLY_THRESHOLDS = "auto_apply_thresholds"
 CONF_SPECIES_ID = "species_id"
 CONF_SPECIES_REGION = "species_region"
+CONF_TIME_PERIODS = "time_periods"
 
 # Mode options
 MODE_FRESHWATER = "freshwater"
@@ -38,6 +39,10 @@ TIDE_MODE_UKHO = "ukho_api"
 TIDE_MODE_NOAA = "noaa_api"
 TIDE_MODE_WORLDTIDES = "worldtides_api"
 TIDE_MODE_SENSOR = "sensor"
+
+# Time period options
+TIME_PERIODS_FULL_DAY = "full_day"
+TIME_PERIODS_DAWN_DUSK = "dawn_dusk"
 
 # Habitat presets for ocean fishing
 HABITAT_OPEN_BEACH = "open_beach"
@@ -171,6 +176,28 @@ LIGHT_DAWN = "dawn"
 LIGHT_DAY = "day"
 LIGHT_DUSK = "dusk"
 LIGHT_NIGHT = "night"
+
+# Time period definitions
+TIME_PERIOD_DEFINITIONS = {
+    TIME_PERIODS_FULL_DAY: {
+        "name": "Full Day (4 periods)",
+        "description": "Monitor all day: Morning, Afternoon, Evening, Night",
+        "periods": [
+            {"name": "morning", "start_hour": 6, "end_hour": 12},
+            {"name": "afternoon", "start_hour": 12, "end_hour": 18},
+            {"name": "evening", "start_hour": 18, "end_hour": 24},
+            {"name": "night", "start_hour": 0, "end_hour": 6},
+        ],
+    },
+    TIME_PERIODS_DAWN_DUSK: {
+        "name": "Dawn & Dusk Only",
+        "description": "Prime fishing times: 1hr before/after sunrise and sunset",
+        "periods": [
+            {"name": "dawn", "relative_to": "sunrise", "offset_before": 60, "offset_after": 60},
+            {"name": "dusk", "relative_to": "sunset", "offset_before": 60, "offset_after": 60},
+        ],
+    },
+}
 
 # Open-Meteo Marine API endpoint
 OPEN_METEO_MARINE_URL = "https://marine-api.open-meteo.com/v1/marine"

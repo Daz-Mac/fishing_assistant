@@ -30,9 +30,12 @@ from .const import (
     CONF_MARINE_ENABLED,
     CONF_AUTO_APPLY_THRESHOLDS,
     CONF_THRESHOLDS,
+    CONF_TIME_PERIODS,
     TIDE_MODE_PROXY,
     TIDE_MODE_SENSOR,
     HABITAT_PRESETS,
+    TIME_PERIODS_FULL_DAY,
+    TIME_PERIODS_DAWN_DUSK,
 )
 from .species_loader import SpeciesLoader
 
@@ -387,7 +390,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             # Set defaults for tide and marine data
             self.ocean_config[CONF_TIDE_MODE] = TIDE_MODE_PROXY
             self.ocean_config[CONF_MARINE_ENABLED] = True
-            return await self.async_step_ocean_thresholds()
+            return await self.async_step_ocean_time_periods()
 
         return self.async_show_form(
             step_id="ocean_weather",
@@ -396,6 +399,39 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     selector.EntitySelectorConfig(domain="weather")
                 ),
             }),
+        )
+
+    async def async_step_ocean_time_periods(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Configure time period monitoring preference."""
+        if user_input is not None:
+            self.ocean_config.update(user_input)
+            return await self.async_step_ocean_thresholds()
+
+        return self.async_show_form(
+            step_id="ocean_time_periods",
+            data_schema=vol.Schema({
+                vol.Required(
+                    CONF_TIME_PERIODS,
+                    default=TIME_PERIODS_FULL_DAY,
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {
+                                "value": TIME_PERIODS_FULL_DAY,
+                                "label": "🌅 Full Day (4 periods: Morning, Afternoon, Evening, Night)"
+                            },
+                            {
+                                "value": TIME_PERIODS_DAWN_DUSK,
+                                "label": "🌄 Dawn & Dusk Only (Prime fishing times: ±1hr sunrise/sunset)"
+                            },
+                        ],
+                        mode="list",
+                    )
+                ),
+            }),
+            description_placeholders={
+                "info": "Choose which time periods to monitor. Dawn & Dusk focuses on the most productive fishing times."
+            }
         )
 
     async def async_step_ocean_thresholds(self, user_input: dict[str, Any] | None = None) -> FlowResult:
@@ -410,6 +446,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_SPECIES_ID: self.ocean_config.get(CONF_SPECIES_ID, "general_mixed"),
                 CONF_SPECIES_REGION: self.ocean_config.get(CONF_SPECIES_REGION, "global"),
                 CONF_HABITAT_PRESET: self.ocean_config[CONF_HABITAT_PRESET],
+                CONF_TIME_PERIODS: self.ocean_config.get(CONF_TIME_PERIODS, TIME_PERIODS_FULL_DAY),
                 CONF_AUTO_APPLY_THRESHOLDS: False,  # Always show thresholds
                 CONF_WEATHER_ENTITY: self.ocean_config[CONF_WEATHER_ENTITY],
                 CONF_TIDE_MODE: TIDE_MODE_PROXY,  # Always use proxy
