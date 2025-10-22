@@ -249,22 +249,21 @@ class OceanFishingScorer:
                 # Calculate score for each time block
                 for block in time_blocks:
                     # Skip past/current periods for today (hybrid approach)
-                    if is_today:
+                    if is_today and block["name"] != "night":
                         # For periods that don't cross midnight (morning, afternoon, evening)
-                        if block["start_hour"] < block["end_hour"]:
-                            block_start_time = datetime.combine(
-                                target_date,
-                                datetime.min.time().replace(hour=block["start_hour"])
+                        # Night period (0-6) is always shown for today as it represents tonight
+                        block_start_time = datetime.combine(
+                            target_date,
+                            datetime.min.time().replace(hour=block["start_hour"])
+                        )
+                        
+                        # Skip if this period has already started (we're in it or past it)
+                        if now >= block_start_time:
+                            _LOGGER.debug(
+                                "Skipping current/past period %s (starts at %s, current time is %s)",
+                                block["name"], block_start_time.strftime("%H:%M"), now.strftime("%H:%M")
                             )
-                            
-                            # Skip if this period has already started (we're in it or past it)
-                            if now >= block_start_time:
-                                _LOGGER.debug(
-                                    "Skipping current/past period %s (starts at %s, current time is %s)",
-                                    block["name"], block_start_time.strftime("%H:%M"), now.strftime("%H:%M")
-                                )
-                                continue
-                        # Night period (0-6) is always shown for today as it's tonight
+                            continue
                     
                     target_time = datetime.combine(
                         target_date,
