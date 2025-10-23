@@ -1,453 +1,417 @@
-from homeassistant.core import HomeAssistant
-import datetime
-from typing import Dict, Optional, List
-import aiohttp
-import pandas as pd
+"""Freshwater fishing scoring algorithm with period-based forecasting."""
 import logging
+from datetime import datetime, timedelta
+from typing import Dict, Optional, List
+from zoneinfo import ZoneInfo
 
+from .const import (
+    CONF_FISH,
+    CONF_BODY_TYPE,
+    CONF_TIME_PERIODS,
+    TIME_PERIODS_FULL_DAY,
+    TIME_PERIODS_DAWN_DUSK,
+    TIME_PERIOD_DEFINITIONS,
+)
 from .species_loader import SpeciesLoader
 from .helpers.astro import calculate_astronomy_forecast
-from .const import (
-    PERIOD_FULL_DAY,
-    PERIOD_DAWN_DUSK,
-)
 
-OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 _LOGGER = logging.getLogger(__name__)
 
 
-def scale_score(score):
-    """Scale score from 0-1 range to 0-10 range."""
-    stretched = (score - 0.5) / (0.9 - 0.5) * 10
-    return max(0, min(10, round(stretched)))
+def get_fish_score(
+    hass,
+    fish_list: List[str],
+    body_type: str,
+    weather_data: Dict,
+    astro_data: Dict,
+    species_loader: SpeciesLoader,
+    target_time: Optional[datetime] = None,
+) -> Dict:
+    """Calculate fishing score for current conditions."""
+    if target_time is None:
+        target_time = datetime.now()
 
+    # Get species profiles
+    profiles = []
+    for fish_id in fish_list:
+        profile = species_loader.get_species(fish_id)
+        if profile:
+            profiles.append(profile)
+        else:
+            _LOGGER.warning("Species profile not found: %s", fish_id)
 
-def get_profile_weights(body_type: str) -> dict:
-    """Get scoring weights based on water body type."""
-    if body_type not in ["lake", "river", "pond", "reservoir"]:
-        _LOGGER.warning(f"Unknown body_type '{body_type}', defaulting to 'lake'.")
-        body_type = "lake"
+    if not profiles:
+        _LOGGER.error("No valid species profiles found")
+        return {
+            "score": 0.0,
+            "breakdown": {},
+            "conditions_summary": "No species data available",
+        }
 
-    weights = {
-        "temp": 0.25,
-        "cloud": 0.1,
-        "pressure": 0.15,
-        "wind": 0.1,
-        "precip": 0.1,
-        "twilight": 0.15,
-        "solunar": 0.1,
-        "moon": 0.05,
+    # Calculate scores for each species
+    species_scores = []
+    for profile in profiles:
+        score = _calculate_species_score(
+            profile, body_type, weather_data, astro_data, target_time
+        )
+        species_scores.append(score)
+
+    # Average the scores
+    final_score = sum(species_scores) / len(species_scores)
+
+    # Generate breakdown
+    breakdown = {
+        "species_count": len(profiles),
+        "body_type": body_type,
+        "target_species": [p.get("name", p["id"]) for p in profiles],
     }
 
-    if body_type == "river":
-        weights.update({
-            "pressure": 0.05,
-            "solunar": 0.05,
-            "precip": 0.2,
-        })
-    elif body_type == "pond":
-        weights.update({
-            "temp": 0.3,
-            "precip": 0.2,
-            "pressure": 0.2,
-        })
-    elif body_type == "reservoir":
-        weights.update({
-            "pressure": 0.1,
-            "solunar": 0.08,
-            "moon": 0.07,
-        })
+    # Generate summary
+    if final_score >= 0.7:
+        summary = "Excellent conditions"
+    elif final_score >= 0.4:
+        summary = "Good conditions"
+    else:
+        summary = "Poor conditions"
 
-    return weights
+    return {
+        "score": round(final_score, 2),
+        "breakdown": breakdown,
+        "conditions_summary": summary,
+    }
 
 
 async def get_fish_score_forecast(
-    hass: HomeAssistant,
-    fish: str,
-    lat: float,
-    lon: float,
-    timezone: str,
-    elevation: float,
+    hass,
+    fish_list: List[str],
     body_type: str,
-    species_loader: Optional[SpeciesLoader] = None,
-    period_type: str = PERIOD_FULL_DAY,
+    weather_entity_id: str,
+    latitude: float,
+    longitude: float,
+    species_loader: SpeciesLoader,
+    period_type: str = TIME_PERIODS_FULL_DAY,
+    days: int = 7,
 ) -> Dict:
-    """
-    Get fishing score forecast for a freshwater species with period-based scoring.
-    
-    Args:
-        hass: Home Assistant instance
-        fish: Species ID (e.g., "bass", "pike", "trout")
-        lat: Latitude
-        lon: Longitude
-        timezone: Timezone string
-        elevation: Elevation in meters
-        body_type: Type of water body (lake, river, pond, reservoir)
-        species_loader: Optional SpeciesLoader instance (will create if not provided)
-        period_type: Type of periods to forecast (PERIOD_FULL_DAY or PERIOD_DAWN_DUSK)
-    
-    Returns:
-        Dictionary with forecast data including periods for each day
-    """
-    # Initialize species loader if not provided
-    if species_loader is None:
-        species_loader = SpeciesLoader(hass)
-        await species_loader.async_load_profiles()
-
-    # Get species profile from JSON
-    fish_profile = species_loader.get_species(fish)
-    
-    if not fish_profile:
-        _LOGGER.warning(f"No species profile found for '{fish}'")
-        return {}
-
-    # Check if this is a freshwater species
-    if fish_profile.get("habitat") != "freshwater":
-        _LOGGER.error(f"Species '{fish}' is not a freshwater species. Use ocean scoring instead.")
-        return {}
-
-    today = datetime.date.today()
-    end_date = today + datetime.timedelta(days=6)
-
-    # Get moon + sun event timings from Skyfield
-    astro_data = await calculate_astronomy_forecast(hass, lat, lon, days=7)
-
-    if not astro_data:
-        return {}
+    """Calculate fishing score forecast for the next N days with period-based scoring."""
+    forecast = {}
 
     try:
-        # Log the exact values being sent to the API
-        _LOGGER.debug(f"Making Open-Meteo API request with lat={lat} ({type(lat)}), lon={lon} ({type(lon)})")
-        params = {
-            "latitude": lat,
-            "longitude": lon,
-            "hourly": "temperature_2m,cloudcover,pressure_msl,precipitation,windspeed_10m",
-            "daily": "sunrise,sunset",
-            "timezone": timezone,
-            "elevation": elevation,
-            "start_date": str(today),
-            "end_date": str(end_date)
-        }
-        _LOGGER.debug(f"Full API parameters: {params}")
+        # Get weather forecast
+        weather_state = hass.states.get(weather_entity_id)
+        if not weather_state:
+            _LOGGER.warning("Weather entity not found: %s", weather_entity_id)
+            return {}
 
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                OPEN_METEO_URL,
-                params=params,
-                timeout=aiohttp.ClientTimeout(total=15)
-            ) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    _LOGGER.error(f"Open-Meteo API error: Status {response.status}, Response: {error_text}")
-                    return {}
+        # Try to get forecast using the new service call method (HA 2023.9+)
+        weather_forecast = []
+        try:
+            service_response = await hass.services.async_call(
+                "weather",
+                "get_forecasts",
+                {"entity_id": weather_entity_id, "type": "daily"},
+                blocking=True,
+                return_response=True,
+            )
+            if service_response and weather_entity_id in service_response:
+                weather_forecast = service_response[weather_entity_id].get("forecast", [])
+                _LOGGER.debug("Got forecast from service call: %d days", len(weather_forecast))
+        except Exception as e:
+            _LOGGER.debug("Service call failed, trying attribute method: %s", e)
+            # Fallback to old attribute method
+            weather_forecast = weather_state.attributes.get("forecast", [])
 
-                data = await response.json()
-                _LOGGER.debug(f"Open-Meteo response: {data}")
-                if "hourly" not in data or "daily" not in data:
-                    _LOGGER.warning(f"Fishing forecast fetch failed for {fish} at {lat}, {lon}: {data}")
-                    return {}
+        if not weather_forecast:
+            _LOGGER.warning("No weather forecast available")
+            return {}
+
+        # Get astronomical forecast
+        astro_forecast = await calculate_astronomy_forecast(hass, latitude, longitude, days=days)
+
+        # Get time period configuration
+        time_period_def = TIME_PERIOD_DEFINITIONS.get(
+            period_type, TIME_PERIOD_DEFINITIONS[TIME_PERIODS_FULL_DAY]
+        )
+
+        # Get current time with timezone awareness
+        now = datetime.now()
+        if now.tzinfo is None:
+            try:
+                tz_str = hass.config.time_zone
+                now = now.replace(tzinfo=ZoneInfo(tz_str))
+            except Exception as e:
+                _LOGGER.debug("Could not get HA timezone, using naive datetime: %s", e)
+
+        # Process each day
+        for day_offset in range(days):
+            target_date = now.date() + timedelta(days=day_offset)
+            date_key = target_date.isoformat()
+            is_today = (day_offset == 0)
+
+            # Get weather for this day
+            day_weather = _get_weather_for_date(weather_forecast, target_date)
+            if not day_weather:
+                continue
+
+            # Get astro data for this day
+            day_astro = astro_forecast.get(date_key, {})
+
+            # Initialize day forecast
+            forecast[date_key] = {
+                "date": date_key,
+                "day_name": target_date.strftime("%A"),
+                "periods": {},  # Dictionary, not array!
+            }
+
+            # Get time blocks for this day
+            time_blocks = await _get_time_blocks_for_date(
+                hass, target_date, time_period_def, day_astro
+            )
+
+            # Calculate score for each time block
+            for block in time_blocks:
+                # Skip past/current periods for today
+                if is_today and block["name"] != "night":
+                    block_start_time = datetime.combine(
+                        target_date,
+                        datetime.min.time().replace(
+                            hour=block["start_hour"],
+                            minute=block.get("start_minute", 0)
+                        )
+                    )
+                    
+                    if now.tzinfo is not None and block_start_time.tzinfo is None:
+                        try:
+                            tz_str = hass.config.time_zone
+                            block_start_time = block_start_time.replace(tzinfo=ZoneInfo(tz_str))
+                        except Exception:
+                            pass
+                    
+                    if now >= block_start_time:
+                        _LOGGER.debug(
+                            "Skipping current/past period %s for today", block["name"]
+                        )
+                        continue
+
+                target_time = datetime.combine(
+                    target_date,
+                    datetime.min.time().replace(
+                        hour=block["start_hour"],
+                        minute=block.get("start_minute", 0)
+                    )
+                )
+
+                # Calculate score for this period
+                result = get_fish_score(
+                    hass=hass,
+                    fish_list=fish_list,
+                    body_type=body_type,
+                    weather_data=day_weather,
+                    astro_data=day_astro,
+                    species_loader=species_loader,
+                    target_time=target_time,
+                )
+
+                # Format time range
+                start_min = block.get("start_minute", 0)
+                end_min = block.get("end_minute", 0)
+                hours_display = f"{block['start_hour']:02d}:{start_min:02d}-{block['end_hour']:02d}:{end_min:02d}"
+
+                # Store period data as dictionary entry (not array element!)
+                forecast[date_key]["periods"][block["name"]] = {
+                    "time_block": block["name"],
+                    "hours": hours_display,
+                    "score": result["score"],
+                    "safety": "safe",  # Freshwater doesn't have marine safety checks
+                    "safety_reasons": ["Conditions within normal limits"],
+                    "tide_state": "n/a",  # No tides in freshwater
+                    "conditions": result["conditions_summary"],
+                    "weather": {
+                        "temperature": day_weather.get("temperature"),
+                        "wind_speed": day_weather.get("wind_speed", 0),
+                        "wind_gust": day_weather.get("wind_gust", day_weather.get("wind_speed", 0)),
+                        "cloud_cover": day_weather.get("cloud_coverage", 50),
+                        "precipitation_probability": day_weather.get("precipitation_probability", 0),
+                        "pressure": day_weather.get("pressure", 1013),
+                    },
+                }
+
+            # Calculate daily average score (only if we have periods)
+            if forecast[date_key]["periods"]:
+                period_scores = [
+                    p["score"] for p in forecast[date_key]["periods"].values()
+                ]
+                forecast[date_key]["daily_avg_score"] = round(
+                    sum(period_scores) / len(period_scores), 2
+                )
+
+                # Find best period of the day
+                best_period = max(
+                    forecast[date_key]["periods"].items(),
+                    key=lambda x: x[1]["score"]
+                )
+                forecast[date_key]["best_period"] = best_period[0]
+                forecast[date_key]["best_score"] = best_period[1]["score"]
+            else:
+                # No periods available (all past for today)
+                forecast[date_key]["daily_avg_score"] = 0
+                forecast[date_key]["best_period"] = None
+                forecast[date_key]["best_score"] = 0
+
     except Exception as e:
-        _LOGGER.error(f"Exception while fetching Open-Meteo data: {e}")
-        return {}
-
-    # Units: temp °C, cloud %, pressure hPa, wind km/h, precip mm
-    hourly = pd.DataFrame({
-        "datetime": pd.to_datetime(data["hourly"]["time"]),
-        "temp": data["hourly"]["temperature_2m"],
-        "cloud": data["hourly"]["cloudcover"],
-        "pressure": data["hourly"]["pressure_msl"],
-        "precip": data["hourly"]["precipitation"],
-        "wind": data["hourly"]["windspeed_10m"]
-    })
-
-    hourly["date"] = hourly["datetime"].dt.date
-    hourly["hour"] = hourly["datetime"].dt.hour
-    hourly["pressure_trend"] = hourly["pressure"].diff()
-
-    weights = get_profile_weights(body_type)
-
-    # Build period-based forecast
-    forecast = {}
-    for date, group in hourly.groupby("date"):
-        date_str = str(date)
-        astro = astro_data.get(date_str, {})
-        
-        # Get sunrise/sunset for period definitions
-        sunrise = _parse_time(astro.get("sunrise"))
-        sunset = _parse_time(astro.get("sunset"))
-        
-        # Calculate periods based on period_type
-        if period_type == PERIOD_DAWN_DUSK:
-            periods = _calculate_dawn_dusk_periods(group, fish_profile, astro, weights, sunrise, sunset)
-        else:  # PERIOD_FULL_DAY
-            periods = _calculate_full_day_periods(group, fish_profile, astro, weights, sunrise, sunset)
-        
-        # Calculate overall day score (average of all period scores)
-        if periods:
-            day_score = sum(p["score"] for p in periods) / len(periods)
-        else:
-            day_score = 0
-        
-        forecast[date_str] = {
-            "score": round(day_score, 1),
-            "periods": periods
-        }
-    
-    _LOGGER.debug(f"Period-based forecast for {fish} on {lat},{lon}: {forecast}")
+        _LOGGER.error("Error calculating forecast: %s", e, exc_info=True)
 
     return forecast
 
 
-def _calculate_full_day_periods(group, profile, astro, weights, sunrise, sunset) -> List[Dict]:
-    """Calculate scores for morning, afternoon, evening, and night periods."""
-    periods = []
-    
-    # Define period hour ranges
-    period_definitions = [
-        {"name": "Morning", "start": 6, "end": 12, "icon": "mdi:weather-sunset-up"},
-        {"name": "Afternoon", "start": 12, "end": 18, "icon": "mdi:weather-sunny"},
-        {"name": "Evening", "start": 18, "end": 22, "icon": "mdi:weather-sunset-down"},
-        {"name": "Night", "start": 22, "end": 6, "icon": "mdi:weather-night"},
-    ]
-    
-    for period_def in period_definitions:
-        # Filter hours for this period
-        if period_def["start"] < period_def["end"]:
-            period_hours = group[
-                (group["hour"] >= period_def["start"]) & 
-                (group["hour"] < period_def["end"])
-            ]
-        else:  # Night period wraps around midnight
-            period_hours = group[
-                (group["hour"] >= period_def["start"]) | 
-                (group["hour"] < period_def["end"])
-            ]
-        
-        if len(period_hours) == 0:
+def _calculate_species_score(
+    profile: Dict,
+    body_type: str,
+    weather_data: Dict,
+    astro_data: Dict,
+    target_time: datetime,
+) -> float:
+    """Calculate score for a single species."""
+    score = 0.5  # Base score
+
+    # Check if species is active this month
+    current_month = target_time.month
+    active_months = profile.get("active_months", list(range(1, 13)))
+    if current_month not in active_months:
+        score *= 0.3  # Significantly reduce score if out of season
+
+    # Temperature preference
+    temp = weather_data.get("temperature")
+    if temp is not None:
+        temp_range = profile.get("temperature_range", {})
+        min_temp = temp_range.get("min", 5)
+        max_temp = temp_range.get("max", 30)
+        optimal_min = temp_range.get("optimal_min", 15)
+        optimal_max = temp_range.get("optimal_max", 25)
+
+        if optimal_min <= temp <= optimal_max:
+            score += 0.3
+        elif min_temp <= temp <= max_temp:
+            score += 0.1
+        else:
+            score -= 0.2
+
+    # Weather conditions
+    cloud_cover = weather_data.get("cloud_coverage", 50)
+    wind_speed = weather_data.get("wind_speed", 0)
+
+    # Cloud preference
+    if cloud_cover > 60:
+        score += 0.1  # Most fish prefer overcast
+    elif cloud_cover < 30:
+        score -= 0.1  # Bright sun can reduce activity
+
+    # Wind (light wind is good, too much is bad)
+    if 5 <= wind_speed <= 15:
+        score += 0.1
+    elif wind_speed > 25:
+        score -= 0.2
+
+    # Pressure
+    pressure = weather_data.get("pressure", 1013)
+    if 1010 <= pressure <= 1020:
+        score += 0.1
+    elif pressure < 1000 or pressure > 1030:
+        score -= 0.1
+
+    # Light conditions (dawn/dusk bonus)
+    hour = target_time.hour
+    if 5 <= hour <= 8 or 17 <= hour <= 20:
+        score += 0.2  # Dawn/dusk feeding times
+
+    # Ensure score is between 0 and 1
+    return max(0.0, min(1.0, score))
+
+
+def _get_weather_for_date(weather_forecast: List[Dict], target_date) -> Optional[Dict]:
+    """Extract weather data for a specific date from forecast."""
+    for forecast_item in weather_forecast:
+        if not forecast_item:
             continue
-        
-        # Calculate scores for each hour in the period
-        scores = []
-        for _, row in period_hours.iterrows():
-            score = _score_hour(row=row, profile=profile, astro=astro, weights=weights)
-            scores.append(score)
-        
-        # Average score for the period
-        avg_score = sum(scores) / len(scores) if scores else 0
-        scaled_score = scale_score(avg_score)
-        
-        # Get weather summary for the period
-        avg_temp = period_hours["temp"].mean()
-        avg_wind = period_hours["wind"].mean()
-        total_precip = period_hours["precip"].sum()
-        
-        periods.append({
-            "name": period_def["name"],
-            "icon": period_def["icon"],
-            "score": scaled_score,
-            "temp": round(avg_temp, 1),
-            "wind": round(avg_wind, 1),
-            "precip": round(total_precip, 1),
-        })
-    
-    return periods
-
-
-def _calculate_dawn_dusk_periods(group, profile, astro, weights, sunrise, sunset) -> List[Dict]:
-    """Calculate scores for dawn and dusk periods only."""
-    periods = []
-    
-    if not sunrise or not sunset:
-        return periods
-    
-    # Dawn period: 1 hour before to 2 hours after sunrise
-    dawn_start = max(0, sunrise.hour - 1)
-    dawn_end = min(23, sunrise.hour + 2)
-    
-    # Dusk period: 2 hours before to 1 hour after sunset
-    dusk_start = max(0, sunset.hour - 2)
-    dusk_end = min(23, sunset.hour + 1)
-    
-    period_definitions = [
-        {"name": "Dawn", "start": dawn_start, "end": dawn_end, "icon": "mdi:weather-sunset-up"},
-        {"name": "Dusk", "start": dusk_start, "end": dusk_end, "icon": "mdi:weather-sunset-down"},
-    ]
-    
-    for period_def in period_definitions:
-        # Filter hours for this period
-        period_hours = group[
-            (group["hour"] >= period_def["start"]) & 
-            (group["hour"] <= period_def["end"])
-        ]
-        
-        if len(period_hours) == 0:
+            
+        forecast_datetime = forecast_item.get("datetime")
+        if not forecast_datetime:
             continue
-        
-        # Calculate scores for each hour in the period
-        scores = []
-        for _, row in period_hours.iterrows():
-            score = _score_hour(row=row, profile=profile, astro=astro, weights=weights)
-            scores.append(score)
-        
-        # Average score for the period
-        avg_score = sum(scores) / len(scores) if scores else 0
-        scaled_score = scale_score(avg_score)
-        
-        # Get weather summary for the period
-        avg_temp = period_hours["temp"].mean()
-        avg_wind = period_hours["wind"].mean()
-        total_precip = period_hours["precip"].sum()
-        
-        periods.append({
-            "name": period_def["name"],
-            "icon": period_def["icon"],
-            "score": scaled_score,
-            "temp": round(avg_temp, 1),
-            "wind": round(avg_wind, 1),
-            "precip": round(total_precip, 1),
-        })
-    
-    return periods
+            
+        try:
+            if isinstance(forecast_datetime, str):
+                forecast_datetime = datetime.fromisoformat(
+                    forecast_datetime.replace('Z', '+00:00')
+                )
+            
+            if forecast_datetime.date() == target_date:
+                return forecast_item
+        except (ValueError, AttributeError) as e:
+            _LOGGER.debug("Error parsing forecast datetime: %s", e)
+            continue
+
+    return None
 
 
-def _score_hour(row, profile, astro, weights: dict) -> float:
-    """Calculate fishing score for a single hour."""
-    hour = row["hour"]
+async def _get_time_blocks_for_date(
+    hass, target_date, time_period_def: Dict, astro_data: Dict
+) -> List[Dict]:
+    """Get time blocks for a specific date based on time period configuration."""
+    periods = time_period_def.get("periods", [])
+    time_blocks = []
 
-    # Extract temp_range from profile (handle both tuple and list formats)
-    temp_range = profile.get("temp_range", [10, 25])
-    if isinstance(temp_range, tuple):
-        temp_range = list(temp_range)
+    for period in periods:
+        if not period:
+            continue
+            
+        try:
+            if "relative_to" in period:
+                # Dawn/Dusk mode - calculate based on sunrise/sunset
+                relative_to = period["relative_to"]
+                offset_before = period.get("offset_before", 60)  # minutes
+                offset_after = period.get("offset_after", 60)  # minutes
 
-    temp_score = _score_temp(row["temp"], temp_range)
-    
-    # Get ideal_cloud from profile
-    ideal_cloud = profile.get("ideal_cloud", 50)
-    cloud_score = 1 - abs(row["cloud"] - ideal_cloud) / 100
-    
-    press_score = _score_pressure_trend(row["pressure_trend"], profile.get("prefers_low_pressure", True))
-    wind_score = _score_wind(row["wind"])
-    precip_score = _score_precip(row["precip"])
+                reference_time = None
+                if relative_to == "sunrise":
+                    sunrise_str = astro_data.get("sunrise")
+                    if sunrise_str:
+                        try:
+                            sunrise_time = datetime.strptime(sunrise_str, "%H:%M").time()
+                            reference_time = datetime.combine(target_date, sunrise_time)
+                        except (ValueError, TypeError):
+                            pass
+                elif relative_to == "sunset":
+                    sunset_str = astro_data.get("sunset")
+                    if sunset_str:
+                        try:
+                            sunset_time = datetime.strptime(sunset_str, "%H:%M").time()
+                            reference_time = datetime.combine(target_date, sunset_time)
+                        except (ValueError, TypeError):
+                            pass
 
-    # Astro events
-    sunrise = _parse_time(astro.get("sunrise"))
-    sunset = _parse_time(astro.get("sunset"))
-    moon_phase = astro.get("moon_phase", 0.5)
-    transit = _parse_time(astro.get("moon_transit", None))
-    underfoot = _parse_time(astro.get("moon_underfoot"))
-    moonrise = _parse_time(astro.get("moonrise"))
-    moonset = _parse_time(astro.get("moonset"))
+                if reference_time:
+                    start_time = reference_time - timedelta(minutes=offset_before)
+                    end_time = reference_time + timedelta(minutes=offset_after)
 
-    twilight_score = _score_twilight(hour, sunrise, sunset)
-    moon_score = _score_moon_phase(moon_phase)
-    solunar_score = _score_solunar(hour, transit, underfoot, moonrise, moonset)
+                    time_blocks.append({
+                        "name": period["name"],
+                        "start_hour": start_time.hour,
+                        "start_minute": start_time.minute,
+                        "end_hour": end_time.hour,
+                        "end_minute": end_time.minute,
+                        "is_relative": True,
+                    })
+            else:
+                # Full day mode - use fixed hours
+                time_blocks.append({
+                    "name": period["name"],
+                    "start_hour": period["start_hour"],
+                    "start_minute": 0,
+                    "end_hour": period["end_hour"],
+                    "end_minute": 0,
+                    "is_relative": False,
+                })
+        except Exception as e:
+            _LOGGER.debug("Error processing time block: %s", e)
+            continue
 
-    return round((
-        temp_score * weights["temp"] +
-        cloud_score * weights["cloud"] +
-        press_score * weights["pressure"] +
-        wind_score * weights["wind"] +
-        precip_score * weights["precip"] +
-        twilight_score * weights["twilight"] +
-        solunar_score * weights["solunar"] +
-        moon_score * weights["moon"]
-    ), 2)
-
-
-# ----------------------------
-# Individual scoring functions
-# ----------------------------
-
-def _score_temp(temp: float, ideal_range: list) -> float:
-    """Score temperature based on ideal range."""
-    # Note: temp is air temp in °C, used as proxy for water temp.
-    low, high = ideal_range[0], ideal_range[1]
-    if temp < low:
-        return max(0, (temp - (low - 10)) / 10)
-    elif temp > high:
-        return max(0, (high + 10 - temp) / 10)
-    return 1.0
-
-
-def _score_pressure_trend(trend: float, prefers_low: bool = True) -> float:
-    """Score pressure trend based on species preference."""
-    if pd.isna(trend):
-        return 0.7
-    
-    if prefers_low:
-        # Species that prefer falling/low pressure (most fish)
-        if trend < -2:
-            return 1.0
-        elif trend > 2:
-            return 0.4
-        return 0.7
-    else:
-        # Species that prefer stable/rising pressure
-        if trend > 2:
-            return 0.9
-        elif trend < -2:
-            return 0.5
-        return 0.8
-
-
-def _score_wind(speed: float) -> float:
-    """Score wind speed (km/h)."""
-    if speed < 2:
-        return 0.8
-    elif speed < 6:
-        return 1.0
-    elif speed < 10:
-        return 0.6
-    return 0.2
-
-
-def _score_precip(amount: float) -> float:
-    """Score precipitation amount (mm/h)."""
-    if amount == 0:
-        return 0.7
-    elif amount < 1:
-        return 1.0
-    elif amount < 5:
-        return 0.5
-    return 0.2
-
-
-def _score_twilight(hour: int, sunrise, sunset) -> float:
-    """Score based on proximity to twilight periods."""
-    if not sunrise or not sunset:
-        return 0.7
-    if abs(hour - sunrise.hour) <= 1 or abs(hour - sunset.hour) <= 1:
-        return 1.0
-    return 0.7
-
-
-def _score_moon_phase(phase: float) -> float:
-    """Score based on moon phase (0.0 = New, 0.5 = Full, 1.0 = New)."""
-    if phase is None:
-        return 0.7  # Default score when moon phase data is missing
-    if phase < 0.1 or phase > 0.9:
-        return 1.0
-    return 0.7
-
-
-def _score_solunar(hour: int, transit, underfoot, moonrise, moonset) -> float:
-    """Score based on solunar periods (moon position events)."""
-    boost = 0
-    for event in [transit, underfoot]:
-        if event and abs(hour - event.hour) <= 1:
-            boost += 0.5
-    for event in [moonrise, moonset]:
-        if event and abs(hour - event.hour) <= 1:
-            boost += 0.25
-    return min(1.0, 0.6 + boost)
-
-
-def _parse_time(time_str: str):
-    """Parse time string to datetime.time object."""
-    if not time_str:
-        return None
-    try:
-        return datetime.datetime.strptime(time_str, "%H:%M").time()
-    except Exception:
-        return None
-    
+    return time_blocks
