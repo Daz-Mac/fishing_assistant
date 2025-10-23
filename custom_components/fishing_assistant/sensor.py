@@ -21,7 +21,7 @@ from .const import (
     CONF_TIME_PERIODS,
     PERIOD_FULL_DAY,
 )
-from .score import get_fish_score_forecast, scale_score
+from .score import get_fish_score_forecast
 from .tide_proxy import TideProxy
 from .marine_data import MarineDataFetcher
 from .ocean_scoring import OceanFishingScorer
