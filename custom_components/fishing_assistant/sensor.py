@@ -62,7 +62,7 @@ async def _setup_freshwater_sensors(hass, config_entry, async_add_entities):
 
     # Initialize species loader
     species_loader = SpeciesLoader(hass)
-    await species_loader.async_load()
+    await species_loader.async_load_profiles()
 
     for fish in fish_list:
         sensors.append(
