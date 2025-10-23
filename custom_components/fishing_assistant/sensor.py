@@ -245,41 +245,50 @@ class FishScoreSensor(SensorEntity):
             "via_device": None
         }
 
-    async def async_update(self):
-        """Fetch the 7-day forecast and set today's score as state."""
-        now = datetime.now()
-        update_hours = [0, 6, 12, 18]
+async def async_update(self):
+    """Fetch the 7-day forecast and set today's score as state."""
+    now = datetime.now()
+    update_hours = [0, 6, 12, 18]
 
-        if self._last_update_hour is not None and now.hour not in update_hours:
-            return
+    if self._last_update_hour is not None and now.hour not in update_hours:
+        return
 
-        if self._last_update_hour == now.hour:
-            return
+    if self._last_update_hour == now.hour:
+        return
 
-        weather_entity_id = self._attrs.get("weather_entity")
-        if not weather_entity_id:
-            _LOGGER.error("No weather entity configured for freshwater sensor")
-            return
+    weather_entity_id = self._attrs.get("weather_entity")
+    if not weather_entity_id:
+        _LOGGER.error("No weather entity configured for freshwater sensor")
+        return
 
-        forecast = await get_fish_score_forecast(
-            hass=self.hass,
-            fish_list=[self._attrs["fish"]],  # Convert to list
-            body_type=self._attrs["body_type"],
-            weather_entity_id=weather_entity_id,
-            latitude=self._attrs["lat"],
-            longitude=self._attrs["lon"],
-            species_loader=self._species_loader,
-            period_type=self._attrs["period_type"],
-            days=7,
-        )
+    forecast = await get_fish_score_forecast(
+        hass=self.hass,
+        fish_list=[self._attrs["fish"]],  # Convert to list
+        body_type=self._attrs["body_type"],
+        weather_entity_id=weather_entity_id,
+        latitude=self._attrs["lat"],
+        longitude=self._attrs["lon"],
+        species_loader=self._species_loader,
+        period_type=self._attrs["period_type"],
+        days=7,
+    )
 
-        today_str = datetime.now().date().strftime("%Y-%m-%d")
-        today_data = forecast.get(today_str, {})
+    today_str = datetime.now().date().strftime("%Y-%m-%d")
+    today_data = forecast.get(today_str, {})
 
-        # Get the daily average score or best score
-        self._state = today_data.get("daily_avg_score", today_data.get("best_score", 0))
-        self._attrs["forecast"] = forecast
-        self._last_update_hour = now.hour
+    # Get the daily average score or best score
+    self._state = today_data.get("daily_avg_score", today_data.get("best_score", 0))
+    
+    # Get component scores from the best period of today
+    component_scores = {}
+    if today_data.get("periods"):
+        best_period_name = today_data.get("best_period")
+        if best_period_name and best_period_name in today_data["periods"]:
+            component_scores = today_data["periods"][best_period_name].get("component_scores", {})
+    
+    self._attrs["component_scores"] = component_scores
+    self._attrs["forecast"] = forecast
+    self._last_update_hour = now.hour
 
     async def async_added_to_hass(self):
         await self.async_update()

@@ -45,19 +45,35 @@ def get_fish_score(
         return {
             "score": 0.0,
             "breakdown": {},
+            "component_scores": {},
             "conditions_summary": "No species data available",
         }
 
     # Calculate scores for each species
     species_scores = []
+    all_component_scores = []
     for profile in profiles:
-        score = _calculate_species_score(
+        score_data = _calculate_species_score(
             profile, body_type, weather_data, astro_data, target_time
         )
-        species_scores.append(score)
+        species_scores.append(score_data["score"])
+        all_component_scores.append(score_data["components"])
 
     # Average the scores
     final_score = sum(species_scores) / len(species_scores)
+
+    # Average component scores across all species
+    component_scores = {}
+    if all_component_scores:
+        # Get all component keys
+        all_keys = set()
+        for comp in all_component_scores:
+            all_keys.update(comp.keys())
+        
+        # Average each component
+        for key in all_keys:
+            values = [comp.get(key, 0) for comp in all_component_scores]
+            component_scores[key] = round(sum(values) / len(values), 2)
 
     # Generate breakdown
     breakdown = {
@@ -77,6 +93,7 @@ def get_fish_score(
     return {
         "score": round(final_score, 2),
         "breakdown": breakdown,
+        "component_scores": component_scores,
         "conditions_summary": summary,
     }
 
@@ -221,6 +238,7 @@ async def get_fish_score_forecast(
                     "time_block": block["name"],
                     "hours": hours_display,
                     "score": result["score"],
+                    "component_scores": result.get("component_scores", {}),
                     "safety": "safe",  # Freshwater doesn't have marine safety checks
                     "safety_reasons": ["Conditions within normal limits"],
                     "tide_state": "n/a",  # No tides in freshwater
@@ -269,18 +287,26 @@ def _calculate_species_score(
     weather_data: Dict,
     astro_data: Dict,
     target_time: datetime,
-) -> float:
-    """Calculate score for a single species."""
-    score = 0.5  # Base score
-
-    # Check if species is active this month
+) -> Dict:
+    """Calculate score for a single species with component breakdown."""
+    base_score = 0.5
+    components = {}
+    
+    # Season/Activity Score
     current_month = target_time.month
     active_months = profile.get("active_months", list(range(1, 13)))
-    if current_month not in active_months:
-        score *= 0.3  # Significantly reduce score if out of season
+    if current_month in active_months:
+        season_score = 1.0
+        season_adjustment = 0.0
+    else:
+        season_score = 0.3
+        season_adjustment = -0.35  # 0.5 * 0.3 - 0.5 = -0.35
+    components["Season"] = season_score
 
-    # Temperature preference
+    # Temperature Score
     temp = weather_data.get("temperature")
+    temp_score = 0.5
+    temp_adjustment = 0.0
     if temp is not None:
         temp_range = profile.get("temperature_range", {})
         min_temp = temp_range.get("min", 5)
@@ -289,42 +315,81 @@ def _calculate_species_score(
         optimal_max = temp_range.get("optimal_max", 25)
 
         if optimal_min <= temp <= optimal_max:
-            score += 0.3
+            temp_score = 1.0
+            temp_adjustment = 0.3
         elif min_temp <= temp <= max_temp:
-            score += 0.1
+            temp_score = 0.7
+            temp_adjustment = 0.1
         else:
-            score -= 0.2
+            temp_score = 0.3
+            temp_adjustment = -0.2
+    components["Temperature"] = temp_score
 
-    # Weather conditions
+    # Cloud Cover Score
     cloud_cover = weather_data.get("cloud_coverage", 50)
-    wind_speed = weather_data.get("wind_speed", 0)
-
-    # Cloud preference
     if cloud_cover > 60:
-        score += 0.1  # Most fish prefer overcast
+        cloud_score = 1.0
+        cloud_adjustment = 0.1
     elif cloud_cover < 30:
-        score -= 0.1  # Bright sun can reduce activity
+        cloud_score = 0.4
+        cloud_adjustment = -0.1
+    else:
+        cloud_score = 0.7
+        cloud_adjustment = 0.0
+    components["Cloud Cover"] = cloud_score
 
-    # Wind (light wind is good, too much is bad)
+    # Wind Score
+    wind_speed = weather_data.get("wind_speed", 0)
     if 5 <= wind_speed <= 15:
-        score += 0.1
+        wind_score = 1.0
+        wind_adjustment = 0.1
     elif wind_speed > 25:
-        score -= 0.2
+        wind_score = 0.3
+        wind_adjustment = -0.2
+    else:
+        wind_score = 0.7
+        wind_adjustment = 0.0
+    components["Wind"] = wind_score
 
-    # Pressure
+    # Pressure Score
     pressure = weather_data.get("pressure", 1013)
     if 1010 <= pressure <= 1020:
-        score += 0.1
+        pressure_score = 1.0
+        pressure_adjustment = 0.1
     elif pressure < 1000 or pressure > 1030:
-        score -= 0.1
+        pressure_score = 0.4
+        pressure_adjustment = -0.1
+    else:
+        pressure_score = 0.7
+        pressure_adjustment = 0.0
+    components["Pressure"] = pressure_score
 
-    # Light conditions (dawn/dusk bonus)
+    # Time of Day Score (Dawn/Dusk bonus)
     hour = target_time.hour
     if 5 <= hour <= 8 or 17 <= hour <= 20:
-        score += 0.2  # Dawn/dusk feeding times
+        time_score = 1.0
+        time_adjustment = 0.2
+    else:
+        time_score = 0.6
+        time_adjustment = 0.0
+    components["Time of Day"] = time_score
 
+    # Calculate final score
+    final_score = base_score
+    final_score += season_adjustment
+    final_score += temp_adjustment
+    final_score += cloud_adjustment
+    final_score += wind_adjustment
+    final_score += pressure_adjustment
+    final_score += time_adjustment
+    
     # Ensure score is between 0 and 1
-    return max(0.0, min(1.0, score))
+    final_score = max(0.0, min(1.0, final_score))
+
+    return {
+        "score": final_score,
+        "components": components
+    }
 
 
 def _get_weather_for_date(weather_forecast: List[Dict], target_date) -> Optional[Dict]:
