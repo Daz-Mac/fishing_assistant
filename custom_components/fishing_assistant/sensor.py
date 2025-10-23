@@ -249,10 +249,8 @@ async def async_update(self):
     """Fetch the 7-day forecast and set today's score as state."""
     now = datetime.now()
     update_hours = [0, 6, 12, 18]
-
     if self._last_update_hour is not None and now.hour not in update_hours:
         return
-
     if self._last_update_hour == now.hour:
         return
 
@@ -263,7 +261,7 @@ async def async_update(self):
 
     forecast = await get_fish_score_forecast(
         hass=self.hass,
-        fish_list=[self._attrs["fish"]],  # Convert to list
+        fish_list=[self._attrs["fish"]], # Convert to list
         body_type=self._attrs["body_type"],
         weather_entity_id=weather_entity_id,
         latitude=self._attrs["lat"],
@@ -278,7 +276,7 @@ async def async_update(self):
 
     # Get the daily average score or best score
     self._state = today_data.get("daily_avg_score", today_data.get("best_score", 0))
-    
+
     # Get component scores from the best period of today
     component_scores = {}
     if today_data.get("periods"):
@@ -286,12 +284,47 @@ async def async_update(self):
         if best_period_name and best_period_name in today_data["periods"]:
             component_scores = today_data["periods"][best_period_name].get("component_scores", {})
     
+    # If no component scores from periods, calculate current score directly
+    if not component_scores:
+        from .score import get_fish_score
+        from .helpers.astro import calculate_astronomy_data
+        
+        # Get current weather
+        weather_state = self.hass.states.get(weather_entity_id)
+        if weather_state:
+            weather_data = {
+                "temperature": weather_state.attributes.get("temperature"),
+                "wind_speed": weather_state.attributes.get("wind_speed", 0),
+                "cloud_coverage": weather_state.attributes.get("cloud_coverage", 50),
+                "pressure": weather_state.attributes.get("pressure", 1013),
+            }
+            
+            # Get current astro data
+            astro_data = await calculate_astronomy_data(
+                self.hass, 
+                self._attrs["lat"], 
+                self._attrs["lon"]
+            )
+            
+            # Calculate current score
+            current_result = get_fish_score(
+                hass=self.hass,
+                fish_list=[self._attrs["fish"]],
+                body_type=self._attrs["body_type"],
+                weather_data=weather_data,
+                astro_data=astro_data,
+                species_loader=self._species_loader,
+                target_time=now,
+            )
+            
+            component_scores = current_result.get("component_scores", {})
+            # Update state with current score if no forecast available
+            if self._state == 0:
+                self._state = current_result.get("score", 0)
+
     self._attrs["component_scores"] = component_scores
     self._attrs["forecast"] = forecast
     self._last_update_hour = now.hour
-
-    async def async_added_to_hass(self):
-        await self.async_update()
 
 
 # ============================================================================
