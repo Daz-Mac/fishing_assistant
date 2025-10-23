@@ -50,6 +50,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def __init__(self):
         """Initialize the config flow."""
         self.ocean_config = {}
+        self.freshwater_config = {}
         self.species_loader = None
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
@@ -93,14 +94,33 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     async def async_step_freshwater(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        """Handle freshwater fishing setup."""
+        """Handle freshwater fishing setup - location and species."""
         # Initialize species loader if not already done
         if self.species_loader is None:
             self.species_loader = SpeciesLoader(self.hass)
             await self.species_loader.async_load_profiles()
         
         if user_input is not None:
-            return await self._async_step_freshwater(user_input)
+            # Validate coordinates
+            errors = {}
+            try:
+                lat = float(user_input[CONF_LATITUDE])
+                lon = float(user_input[CONF_LONGITUDE])
+                if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                    errors["base"] = "invalid_coordinates"
+            except (ValueError, KeyError):
+                errors["base"] = "invalid_coordinates"
+
+            if errors:
+                return self.async_show_form(
+                    step_id="freshwater",
+                    data_schema=self._get_freshwater_schema(user_input),
+                    errors=errors,
+                )
+
+            # Store config and move to time periods step
+            self.freshwater_config.update(user_input)
+            return await self.async_step_freshwater_time_periods()
 
         # Get freshwater species from JSON
         freshwater_species = self.species_loader.get_species_by_type("freshwater")
@@ -163,8 +183,53 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             }),
         )
 
+    async def async_step_freshwater_time_periods(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Configure time period monitoring preference for freshwater."""
+        if user_input is not None:
+            self.freshwater_config.update(user_input)
+            return await self._async_step_freshwater_complete()
+
+        return self.async_show_form(
+            step_id="freshwater_time_periods",
+            data_schema=vol.Schema({
+                vol.Required(
+                    CONF_TIME_PERIODS,
+                    default=TIME_PERIODS_FULL_DAY,
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {
+                                "value": TIME_PERIODS_FULL_DAY,
+                                "label": "🌅 Full Day (4 periods: Morning, Afternoon, Evening, Night)"
+                            },
+                            {
+                                "value": TIME_PERIODS_DAWN_DUSK,
+                                "label": "🌄 Dawn & Dusk Only (Prime fishing times around sunrise/sunset)"
+                            },
+                        ],
+                        mode="list",
+                    )
+                ),
+            }),
+            description_placeholders={
+                "info": "Choose which time periods to monitor. Dawn & Dusk focuses on the most productive fishing times."
+            }
+        )
+
+    async def _async_step_freshwater_complete(self) -> FlowResult:
+        """Complete freshwater setup."""
+        # Add timezone and elevation
+        self.freshwater_config[CONF_TIMEZONE] = str(self.hass.config.time_zone)
+        self.freshwater_config[CONF_ELEVATION] = self.hass.config.elevation
+        self.freshwater_config[CONF_MODE] = MODE_FRESHWATER
+
+        return self.async_create_entry(
+            title=self.freshwater_config[CONF_NAME],
+            data=self.freshwater_config,
+        )
+
     async def _async_step_freshwater(self, user_input: dict[str, Any]) -> FlowResult:
-        """Process freshwater setup."""
+        """Process freshwater setup (legacy method for backwards compatibility)."""
         errors = {}
 
         # Validate coordinates
@@ -187,6 +252,10 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         user_input[CONF_TIMEZONE] = str(self.hass.config.time_zone)
         user_input[CONF_ELEVATION] = self.hass.config.elevation
         user_input[CONF_MODE] = MODE_FRESHWATER
+        
+        # Add default time period if not present
+        if CONF_TIME_PERIODS not in user_input:
+            user_input[CONF_TIME_PERIODS] = TIME_PERIODS_FULL_DAY
 
         return self.async_create_entry(
             title=user_input[CONF_NAME],
@@ -657,6 +726,24 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     CONF_LONGITUDE,
                     default=self.config_entry.data.get(CONF_LONGITUDE, "")
                 ): cv.longitude,
+                vol.Required(
+                    CONF_TIME_PERIODS,
+                    default=self.config_entry.data.get(CONF_TIME_PERIODS, TIME_PERIODS_FULL_DAY)
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {
+                                "value": TIME_PERIODS_FULL_DAY,
+                                "label": "🌅 Full Day (4 periods)"
+                            },
+                            {
+                                "value": TIME_PERIODS_DAWN_DUSK,
+                                "label": "🌄 Dawn & Dusk Only"
+                            },
+                        ],
+                        mode="dropdown",
+                    )
+                ),
             }),
         )
 
@@ -670,6 +757,24 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         return self.async_show_form(
             step_id="ocean_options",
             data_schema=vol.Schema({
+                vol.Required(
+                    CONF_TIME_PERIODS,
+                    default=self.config_entry.data.get(CONF_TIME_PERIODS, TIME_PERIODS_FULL_DAY)
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {
+                                "value": TIME_PERIODS_FULL_DAY,
+                                "label": "🌅 Full Day (4 periods)"
+                            },
+                            {
+                                "value": TIME_PERIODS_DAWN_DUSK,
+                                "label": "🌄 Dawn & Dusk Only"
+                            },
+                        ],
+                        mode="dropdown",
+                    )
+                ),
                 vol.Required(
                     "max_wind_speed",
                     default=thresholds.get("max_wind_speed", 25),
