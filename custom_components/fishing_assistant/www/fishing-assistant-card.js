@@ -182,6 +182,40 @@ class FishingAssistantCard extends HTMLElement {
       return safetyMap[safety] || '❓';
     };
 
+    const getHabitatDetails = (habitatPreset) => {
+      const habitatMap = {
+        'open_beach': {
+          name: 'Open Beach',
+          icon: '🏖️',
+          max_wind: 25,
+          max_gust: 40,
+          max_wave: 2.0
+        },
+        'rocky_point': {
+          name: 'Rocky Point',
+          icon: '🪨',
+          max_wind: 30,
+          max_gust: 45,
+          max_wave: 2.5
+        },
+        'harbour': {
+          name: 'Harbour/Jetty',
+          icon: '⚓',
+          max_wind: 35,
+          max_gust: 50,
+          max_wave: 3.0
+        },
+        'reef': {
+          name: 'Reef',
+          icon: '🐠',
+          max_wind: 20,
+          max_gust: 35,
+          max_wave: 1.5
+        }
+      };
+      return habitatMap[habitatPreset] || null;
+    };
+
     const scoreColor = getScoreColor(score);
     const scoreLabel = getScoreLabel(score);
 
@@ -305,6 +339,49 @@ class FishingAssistantCard extends HTMLElement {
           font-size: 14px;
           font-weight: 500;
           color: var(--primary-text-color);
+        }
+        .habitat-info {
+          background: var(--secondary-background-color);
+          padding: 12px;
+          border-radius: 8px;
+          margin-bottom: 16px;
+          border-left: 3px solid var(--primary-color);
+        }
+        .habitat-header {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin-bottom: 8px;
+        }
+        .habitat-icon {
+          font-size: 20px;
+        }
+        .habitat-name {
+          font-size: 14px;
+          font-weight: 600;
+          color: var(--primary-text-color);
+        }
+        .habitat-thresholds {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 8px;
+          font-size: 11px;
+        }
+        .habitat-threshold {
+          text-align: center;
+          padding: 4px;
+          background: var(--card-background-color);
+          border-radius: 4px;
+        }
+        .threshold-label {
+          color: var(--secondary-text-color);
+          font-size: 10px;
+          text-transform: uppercase;
+          margin-bottom: 2px;
+        }
+        .threshold-value {
+          color: var(--primary-text-color);
+          font-weight: 600;
         }
         .component-scores {
           margin-bottom: 24px;
@@ -619,6 +696,33 @@ class FishingAssistantCard extends HTMLElement {
           </div>
         ` : ''}
 
+        ${(() => {
+          const habitatDetails = getHabitatDetails(attrs.habitat);
+          if (!habitatDetails) return '';
+          return `
+            <div class="habitat-info">
+              <div class="habitat-header">
+                <span class="habitat-icon">${habitatDetails.icon}</span>
+                <span class="habitat-name">${habitatDetails.name}</span>
+              </div>
+              <div class="habitat-thresholds">
+                <div class="habitat-threshold">
+                  <div class="threshold-label">Max Wind</div>
+                  <div class="threshold-value">${habitatDetails.max_wind} km/h</div>
+                </div>
+                <div class="habitat-threshold">
+                  <div class="threshold-label">Max Gust</div>
+                  <div class="threshold-value">${habitatDetails.max_gust} km/h</div>
+                </div>
+                <div class="habitat-threshold">
+                  <div class="threshold-label">Max Wave</div>
+                  <div class="threshold-value">${habitatDetails.max_wave}m</div>
+                </div>
+              </div>
+            </div>
+          `;
+        })()}
+
         ${config.show_current_conditions ? `
           <div class="current-conditions">
             ${attrs.species_focus && attrs.species_focus !== 'Unknown' ? `
@@ -787,6 +891,40 @@ class FishingAssistantCard extends HTMLElement {
     }
 
     this.render(entity);
+  }
+
+  getHabitatDetailsForPopup(habitatPreset) {
+    const habitatMap = {
+      'open_beach': {
+        name: 'Open Beach',
+        icon: '🏖️',
+        max_wind: 25,
+        max_gust: 40,
+        max_wave: 2.0
+      },
+      'rocky_point': {
+        name: 'Rocky Point',
+        icon: '🪨',
+        max_wind: 30,
+        max_gust: 45,
+        max_wave: 2.5
+      },
+      'harbour': {
+        name: 'Harbour/Jetty',
+        icon: '⚓',
+        max_wind: 35,
+        max_gust: 50,
+        max_wave: 3.0
+      },
+      'reef': {
+        name: 'Reef',
+        icon: '🐠',
+        max_wind: 20,
+        max_gust: 35,
+        max_wave: 1.5
+      }
+    };
+    return habitatMap[habitatPreset] || null;
   }
 
   renderForecast(forecast, maxDays = 5) {
