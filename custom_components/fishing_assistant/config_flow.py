@@ -99,7 +99,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if self.species_loader is None:
             self.species_loader = SpeciesLoader(self.hass)
             await self.species_loader.async_load_profiles()
-        
+
         if user_input is not None:
             # Validate coordinates
             errors = {}
@@ -124,7 +124,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         # Get freshwater species from JSON
         freshwater_species = self.species_loader.get_species_by_type("freshwater")
-        
+
         # Check if species loaded successfully
         if not freshwater_species:
             _LOGGER.error("No freshwater species found in species_profiles.json")
@@ -137,12 +137,11 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             ]
         else:
             species_options = []
-            
             for species in sorted(freshwater_species, key=lambda s: s.get("name", s["id"])):
                 emoji = species.get("emoji", "🐟")
                 name = species.get("name", species["id"])
                 species_id = species["id"]
-                
+
                 # Add active months info
                 active_months = species.get("active_months", [])
                 if len(active_months) == 12:
@@ -151,11 +150,11 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     season_info = f"Active: {len(active_months)} months"
                 else:
                     season_info = ""
-                
+
                 label = f"{emoji} {name}"
                 if season_info:
                     label += f" ({season_info})"
-                
+
                 species_options.append({
                     "value": species_id,
                     "label": label
@@ -187,7 +186,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Configure time period monitoring preference for freshwater."""
         if user_input is not None:
             self.freshwater_config.update(user_input)
-            return await self._async_step_freshwater_complete()
+            return await self.async_step_freshwater_weather()
 
         return self.async_show_form(
             step_id="freshwater_time_periods",
@@ -213,6 +212,100 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             }),
             description_placeholders={
                 "info": "Choose which time periods to monitor. Dawn & Dusk focuses on the most productive fishing times."
+            }
+        )
+
+    async def async_step_freshwater_weather(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Configure weather integration for freshwater."""
+        if user_input is not None:
+            if not user_input.get(CONF_WEATHER_ENTITY):
+                return self.async_show_form(
+                    step_id="freshwater_weather",
+                    data_schema=vol.Schema({
+                        vol.Required(CONF_WEATHER_ENTITY): selector.EntitySelector(
+                            selector.EntitySelectorConfig(domain="weather")
+                        ),
+                    }),
+                    errors={"base": "no_weather_entity"},
+                )
+
+            self.freshwater_config.update(user_input)
+            return await self.async_step_freshwater_thresholds()
+
+        return self.async_show_form(
+            step_id="freshwater_weather",
+            data_schema=vol.Schema({
+                vol.Required(CONF_WEATHER_ENTITY): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="weather")
+                ),
+            }),
+            description_placeholders={
+                "info": "Select your weather integration for accurate fishing forecasts."
+            }
+        )
+
+    async def async_step_freshwater_thresholds(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Configure safety thresholds for freshwater."""
+        if user_input is not None:
+            # Store thresholds
+            self.freshwater_config[CONF_THRESHOLDS] = {
+                "max_wind_speed": user_input["max_wind_speed"],
+                "min_temperature": user_input["min_temperature"],
+                "max_temperature": user_input["max_temperature"],
+            }
+            return await self._async_step_freshwater_complete()
+
+        # Get defaults based on body type
+        body_type = self.freshwater_config.get(CONF_BODY_TYPE, "lake")
+        
+        # Set defaults based on body type
+        if body_type == "river":
+            default_wind = 30
+        elif body_type == "pond":
+            default_wind = 35
+        else:  # lake
+            default_wind = 25
+
+        return self.async_show_form(
+            step_id="freshwater_thresholds",
+            data_schema=vol.Schema({
+                vol.Required(
+                    "max_wind_speed",
+                    default=default_wind,
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=10,
+                        max=50,
+                        step=5,
+                        unit_of_measurement="km/h",
+                        mode="slider",
+                    )
+                ),
+                vol.Required(
+                    "min_temperature",
+                    default=0,
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=-10,
+                        max=20,
+                        step=1,
+                        unit_of_measurement="°C",
+                    )
+                ),
+                vol.Required(
+                    "max_temperature",
+                    default=35,
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=20,
+                        max=50,
+                        step=1,
+                        unit_of_measurement="°C",
+                    )
+                ),
+            }),
+            description_placeholders={
+                "info": "Set safe fishing limits for your comfort and safety."
             }
         )
 
@@ -252,7 +345,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         user_input[CONF_TIMEZONE] = str(self.hass.config.time_zone)
         user_input[CONF_ELEVATION] = self.hass.config.elevation
         user_input[CONF_MODE] = MODE_FRESHWATER
-        
+
         # Add default time period if not present
         if CONF_TIME_PERIODS not in user_input:
             user_input[CONF_TIME_PERIODS] = TIME_PERIODS_FULL_DAY
@@ -275,7 +368,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             {"value": "walleye", "label": "🐟 Walleye"},
             {"value": "crappie", "label": "🐟 Crappie"},
         ]
-        
+
         # If species loader is available, use it
         if self.species_loader and self.species_loader._profiles:
             freshwater_species = self.species_loader.get_species_by_type("freshwater")
@@ -285,7 +378,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     emoji = species.get("emoji", "🐟")
                     name = species.get("name", species["id"])
                     species_id = species["id"]
-                    
+
                     active_months = species.get("active_months", [])
                     if len(active_months) == 12:
                         season_info = "Year-round"
@@ -293,16 +386,16 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         season_info = f"Active: {len(active_months)} months"
                     else:
                         season_info = ""
-                    
+
                     label = f"{emoji} {name}"
                     if season_info:
                         label += f" ({season_info})"
-                    
+
                     species_options.append({
                         "value": species_id,
                         "label": label
                     })
-        
+
         return vol.Schema({
             vol.Required(CONF_NAME, default=user_input.get(CONF_NAME, "") if user_input else ""): str,
             vol.Required(CONF_LATITUDE, default=user_input.get(CONF_LATITUDE, "") if user_input else ""): cv.latitude,
@@ -433,11 +526,10 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 # Only include ocean species
                 if species.get("type") != "ocean":
                     continue
-                    
-                if (not species["id"].startswith("general_mixed") 
-                    and not species["id"].startswith("surf_predators") 
-                    and not species["id"].startswith("flatfish")):
 
+                if (not species["id"].startswith("general_mixed")
+                        and not species["id"].startswith("surf_predators")
+                        and not species["id"].startswith("flatfish")):
                     # Check if we already have this species (avoid duplicates)
                     if not any(s["id"] == species["id"] for s in all_species):
                         all_species.append(species)
@@ -528,6 +620,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             # Set defaults for tide and marine data
             self.ocean_config[CONF_TIDE_MODE] = TIDE_MODE_PROXY
             self.ocean_config[CONF_MARINE_ENABLED] = True
+
             return await self.async_step_ocean_time_periods()
 
         return self.async_show_form(
