@@ -289,18 +289,18 @@ def _calculate_species_score(
     target_time: datetime,
 ) -> Dict:
     """Calculate score for a single species with component breakdown."""
-    base_score = 0.5
     components = {}
+    total_adjustment = 0.0
     
     # Season/Activity Score
     current_month = target_time.month
     active_months = profile.get("active_months", list(range(1, 13)))
     if current_month in active_months:
         season_score = 1.0
-        season_adjustment = 0.0
+        season_multiplier = 1.0
     else:
         season_score = 0.3
-        season_adjustment = -0.35  # 0.5 * 0.3 - 0.5 = -0.35
+        season_multiplier = 0.3
     components["Season"] = season_score
 
     # Temperature Score
@@ -324,6 +324,7 @@ def _calculate_species_score(
             temp_score = 0.3
             temp_adjustment = -0.2
     components["Temperature"] = temp_score
+    total_adjustment += temp_adjustment
 
     # Cloud Cover Score
     cloud_cover = weather_data.get("cloud_coverage", 50)
@@ -337,6 +338,7 @@ def _calculate_species_score(
         cloud_score = 0.7
         cloud_adjustment = 0.0
     components["Cloud Cover"] = cloud_score
+    total_adjustment += cloud_adjustment
 
     # Wind Score
     wind_speed = weather_data.get("wind_speed", 0)
@@ -350,6 +352,7 @@ def _calculate_species_score(
         wind_score = 0.7
         wind_adjustment = 0.0
     components["Wind"] = wind_score
+    total_adjustment += wind_adjustment
 
     # Pressure Score
     pressure = weather_data.get("pressure", 1013)
@@ -363,6 +366,7 @@ def _calculate_species_score(
         pressure_score = 0.7
         pressure_adjustment = 0.0
     components["Pressure"] = pressure_score
+    total_adjustment += pressure_adjustment
 
     # Time of Day Score (Dawn/Dusk bonus)
     hour = target_time.hour
@@ -373,15 +377,11 @@ def _calculate_species_score(
         time_score = 0.6
         time_adjustment = 0.0
     components["Time of Day"] = time_score
+    total_adjustment += time_adjustment
 
     # Calculate final score
-    final_score = base_score
-    final_score += season_adjustment
-    final_score += temp_adjustment
-    final_score += cloud_adjustment
-    final_score += wind_adjustment
-    final_score += pressure_adjustment
-    final_score += time_adjustment
+    base_score = 0.5
+    final_score = (base_score + total_adjustment) * season_multiplier
     
     # Ensure score is between 0 and 1
     final_score = max(0.0, min(1.0, final_score))
