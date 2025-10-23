@@ -44,6 +44,10 @@ TIDE_MODE_SENSOR = "sensor"
 TIME_PERIODS_FULL_DAY = "full_day"
 TIME_PERIODS_DAWN_DUSK = "dawn_dusk"
 
+# Aliases for period types (used in scoring modules)
+PERIOD_FULL_DAY = TIME_PERIODS_FULL_DAY
+PERIOD_DAWN_DUSK = TIME_PERIODS_DAWN_DUSK
+
 # Habitat presets for ocean fishing
 HABITAT_OPEN_BEACH = "open_beach"
 HABITAT_ROCKY_POINT = "rocky_point"

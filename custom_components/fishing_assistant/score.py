@@ -1,23 +1,29 @@
 from homeassistant.core import HomeAssistant
 import datetime
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 import aiohttp
 import pandas as pd
 import logging
 
 from .species_loader import SpeciesLoader
 from .helpers.astro import calculate_astronomy_forecast
+from .const import (
+    PERIOD_FULL_DAY,
+    PERIOD_DAWN_DUSK,
+)
 
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 _LOGGER = logging.getLogger(__name__)
 
 
 def scale_score(score):
+    """Scale score from 0-1 range to 0-10 range."""
     stretched = (score - 0.5) / (0.9 - 0.5) * 10
     return max(0, min(10, round(stretched)))
 
 
 def get_profile_weights(body_type: str) -> dict:
+    """Get scoring weights based on water body type."""
     if body_type not in ["lake", "river", "pond", "reservoir"]:
         _LOGGER.warning(f"Unknown body_type '{body_type}', defaulting to 'lake'.")
         body_type = "lake"
@@ -64,9 +70,10 @@ async def get_fish_score_forecast(
     elevation: float,
     body_type: str,
     species_loader: Optional[SpeciesLoader] = None,
-) -> Dict[str, Dict[str, str | float]]:
+    period_type: str = PERIOD_FULL_DAY,
+) -> Dict:
     """
-    Get fishing score forecast for a species.
+    Get fishing score forecast for a freshwater species with period-based scoring.
     
     Args:
         hass: Home Assistant instance
@@ -77,6 +84,10 @@ async def get_fish_score_forecast(
         elevation: Elevation in meters
         body_type: Type of water body (lake, river, pond, reservoir)
         species_loader: Optional SpeciesLoader instance (will create if not provided)
+        period_type: Type of periods to forecast (PERIOD_FULL_DAY or PERIOD_DAWN_DUSK)
+    
+    Returns:
+        Dictionary with forecast data including periods for each day
     """
     # Initialize species loader if not provided
     if species_loader is None:
@@ -153,38 +164,154 @@ async def get_fish_score_forecast(
     hourly["hour"] = hourly["datetime"].dt.hour
     hourly["pressure_trend"] = hourly["pressure"].diff()
 
-    forecast = {}
     weights = get_profile_weights(body_type)
 
+    # Build period-based forecast
+    forecast = {}
     for date, group in hourly.groupby("date"):
         date_str = str(date)
-        scores = []
         astro = astro_data.get(date_str, {})
-
-        for _, row in group.iterrows():
-            score = _score_hour(row=row, profile=fish_profile, astro=astro, weights=weights)
-            scores.append((row["hour"], score))
-
-        # Best 3-hour rolling window
-        best_avg = 0
-        best_window = ("--:--", "--:--")
-        for i in range(len(scores) - 2):
-            avg = (scores[i][1] + scores[i+1][1] + scores[i+2][1]) / 3
-            if avg > best_avg:
-                best_avg = avg
-                best_window = (f"{scores[i][0]:02}:00", f"{scores[i+2][0]:02}:00")
-
-        forecast[date_str] = {
-            "score": scale_score(best_avg),
-            "best_window": f"{best_window[0]} – {best_window[1]}"
-        }
         
-    _LOGGER.debug(f"Forecast for {fish} on {lat},{lon}: {forecast}")
+        # Get sunrise/sunset for period definitions
+        sunrise = _parse_time(astro.get("sunrise"))
+        sunset = _parse_time(astro.get("sunset"))
+        
+        # Calculate periods based on period_type
+        if period_type == PERIOD_DAWN_DUSK:
+            periods = _calculate_dawn_dusk_periods(group, fish_profile, astro, weights, sunrise, sunset)
+        else:  # PERIOD_FULL_DAY
+            periods = _calculate_full_day_periods(group, fish_profile, astro, weights, sunrise, sunset)
+        
+        # Calculate overall day score (average of all period scores)
+        if periods:
+            day_score = sum(p["score"] for p in periods) / len(periods)
+        else:
+            day_score = 0
+        
+        forecast[date_str] = {
+            "score": round(day_score, 1),
+            "periods": periods
+        }
+    
+    _LOGGER.debug(f"Period-based forecast for {fish} on {lat},{lon}: {forecast}")
 
     return forecast
 
 
+def _calculate_full_day_periods(group, profile, astro, weights, sunrise, sunset) -> List[Dict]:
+    """Calculate scores for morning, afternoon, evening, and night periods."""
+    periods = []
+    
+    # Define period hour ranges
+    period_definitions = [
+        {"name": "Morning", "start": 6, "end": 12, "icon": "mdi:weather-sunset-up"},
+        {"name": "Afternoon", "start": 12, "end": 18, "icon": "mdi:weather-sunny"},
+        {"name": "Evening", "start": 18, "end": 22, "icon": "mdi:weather-sunset-down"},
+        {"name": "Night", "start": 22, "end": 6, "icon": "mdi:weather-night"},
+    ]
+    
+    for period_def in period_definitions:
+        # Filter hours for this period
+        if period_def["start"] < period_def["end"]:
+            period_hours = group[
+                (group["hour"] >= period_def["start"]) & 
+                (group["hour"] < period_def["end"])
+            ]
+        else:  # Night period wraps around midnight
+            period_hours = group[
+                (group["hour"] >= period_def["start"]) | 
+                (group["hour"] < period_def["end"])
+            ]
+        
+        if len(period_hours) == 0:
+            continue
+        
+        # Calculate scores for each hour in the period
+        scores = []
+        for _, row in period_hours.iterrows():
+            score = _score_hour(row=row, profile=profile, astro=astro, weights=weights)
+            scores.append(score)
+        
+        # Average score for the period
+        avg_score = sum(scores) / len(scores) if scores else 0
+        scaled_score = scale_score(avg_score)
+        
+        # Get weather summary for the period
+        avg_temp = period_hours["temp"].mean()
+        avg_wind = period_hours["wind"].mean()
+        total_precip = period_hours["precip"].sum()
+        
+        periods.append({
+            "name": period_def["name"],
+            "icon": period_def["icon"],
+            "score": scaled_score,
+            "temp": round(avg_temp, 1),
+            "wind": round(avg_wind, 1),
+            "precip": round(total_precip, 1),
+        })
+    
+    return periods
+
+
+def _calculate_dawn_dusk_periods(group, profile, astro, weights, sunrise, sunset) -> List[Dict]:
+    """Calculate scores for dawn and dusk periods only."""
+    periods = []
+    
+    if not sunrise or not sunset:
+        return periods
+    
+    # Dawn period: 1 hour before to 2 hours after sunrise
+    dawn_start = max(0, sunrise.hour - 1)
+    dawn_end = min(23, sunrise.hour + 2)
+    
+    # Dusk period: 2 hours before to 1 hour after sunset
+    dusk_start = max(0, sunset.hour - 2)
+    dusk_end = min(23, sunset.hour + 1)
+    
+    period_definitions = [
+        {"name": "Dawn", "start": dawn_start, "end": dawn_end, "icon": "mdi:weather-sunset-up"},
+        {"name": "Dusk", "start": dusk_start, "end": dusk_end, "icon": "mdi:weather-sunset-down"},
+    ]
+    
+    for period_def in period_definitions:
+        # Filter hours for this period
+        period_hours = group[
+            (group["hour"] >= period_def["start"]) & 
+            (group["hour"] <= period_def["end"])
+        ]
+        
+        if len(period_hours) == 0:
+            continue
+        
+        # Calculate scores for each hour in the period
+        scores = []
+        for _, row in period_hours.iterrows():
+            score = _score_hour(row=row, profile=profile, astro=astro, weights=weights)
+            scores.append(score)
+        
+        # Average score for the period
+        avg_score = sum(scores) / len(scores) if scores else 0
+        scaled_score = scale_score(avg_score)
+        
+        # Get weather summary for the period
+        avg_temp = period_hours["temp"].mean()
+        avg_wind = period_hours["wind"].mean()
+        total_precip = period_hours["precip"].sum()
+        
+        periods.append({
+            "name": period_def["name"],
+            "icon": period_def["icon"],
+            "score": scaled_score,
+            "temp": round(avg_temp, 1),
+            "wind": round(avg_wind, 1),
+            "precip": round(total_precip, 1),
+        })
+    
+    return periods
+
+
 def _score_hour(row, profile, astro, weights: dict) -> float:
+    """Calculate fishing score for a single hour."""
     hour = row["hour"]
 
     # Extract temp_range from profile (handle both tuple and list formats)
@@ -264,7 +391,7 @@ def _score_pressure_trend(trend: float, prefers_low: bool = True) -> float:
 
 
 def _score_wind(speed: float) -> float:
-    # Assumes km/h
+    """Score wind speed (km/h)."""
     if speed < 2:
         return 0.8
     elif speed < 6:
@@ -275,7 +402,7 @@ def _score_wind(speed: float) -> float:
 
 
 def _score_precip(amount: float) -> float:
-    # Assumes mm/h
+    """Score precipitation amount (mm/h)."""
     if amount == 0:
         return 0.7
     elif amount < 1:
@@ -286,6 +413,7 @@ def _score_precip(amount: float) -> float:
 
 
 def _score_twilight(hour: int, sunrise, sunset) -> float:
+    """Score based on proximity to twilight periods."""
     if not sunrise or not sunset:
         return 0.7
     if abs(hour - sunrise.hour) <= 1 or abs(hour - sunset.hour) <= 1:
@@ -294,7 +422,7 @@ def _score_twilight(hour: int, sunrise, sunset) -> float:
 
 
 def _score_moon_phase(phase: float) -> float:
-    # 0.0 = New, 0.5 = Full, 1.0 = New
+    """Score based on moon phase (0.0 = New, 0.5 = Full, 1.0 = New)."""
     if phase is None:
         return 0.7  # Default score when moon phase data is missing
     if phase < 0.1 or phase > 0.9:
@@ -303,6 +431,7 @@ def _score_moon_phase(phase: float) -> float:
 
 
 def _score_solunar(hour: int, transit, underfoot, moonrise, moonset) -> float:
+    """Score based on solunar periods (moon position events)."""
     boost = 0
     for event in [transit, underfoot]:
         if event and abs(hour - event.hour) <= 1:
@@ -314,6 +443,7 @@ def _score_solunar(hour: int, transit, underfoot, moonrise, moonset) -> float:
 
 
 def _parse_time(time_str: str):
+    """Parse time string to datetime.time object."""
     if not time_str:
         return None
     try:

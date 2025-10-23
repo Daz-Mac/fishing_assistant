@@ -18,6 +18,8 @@ from .const import (
     CONF_MARINE_ENABLED,
     CONF_TIDE_MODE,
     TIDE_MODE_PROXY,
+    CONF_TIME_PERIODS,
+    PERIOD_FULL_DAY,
 )
 from .score import get_fish_score_forecast, scale_score
 from .tide_proxy import TideProxy
@@ -54,6 +56,7 @@ async def _setup_freshwater_sensors(hass, config_entry, async_add_entities):
     body_type = data["body_type"]
     timezone = data["timezone"]
     elevation = data["elevation"]
+    period_type = data.get(CONF_TIME_PERIODS, PERIOD_FULL_DAY)
 
     for fish in fish_list:
         sensors.append(
@@ -65,6 +68,7 @@ async def _setup_freshwater_sensors(hass, config_entry, async_add_entities):
                 timezone=timezone,
                 body_type=body_type,
                 elevation=elevation,
+                period_type=period_type,
                 config_entry_id=config_entry.entry_id
             )
         )
@@ -174,7 +178,7 @@ class FishScoreSensor(SensorEntity):
 
     should_poll = True
 
-    def __init__(self, name, fish, lat, lon, body_type, timezone, elevation, config_entry_id):
+    def __init__(self, name, fish, lat, lon, body_type, timezone, elevation, period_type, config_entry_id):
         self._last_update_hour = None
         self._config_entry_id = config_entry_id
         self._device_identifier = f"{name}_{lat}_{lon}"
@@ -189,6 +193,7 @@ class FishScoreSensor(SensorEntity):
             "body_type": body_type,
             "timezone": timezone,
             "elevation": elevation,
+            "period_type": period_type,
         }
 
     @property
@@ -249,6 +254,7 @@ class FishScoreSensor(SensorEntity):
             timezone=self._attrs["timezone"],
             elevation=self._attrs["elevation"],
             body_type=self._attrs["body_type"],
+            period_type=self._attrs["period_type"],
         )
 
         today_str = datetime.now().date().strftime("%Y-%m-%d")
