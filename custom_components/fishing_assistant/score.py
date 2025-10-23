@@ -91,7 +91,7 @@ async def get_fish_score_forecast(
         return {}
 
     # Check if this is a freshwater species
-    if fish_profile.get("type") != "freshwater":
+    if fish_profile.get("habitat") != "freshwater":
         _LOGGER.error(f"Species '{fish}' is not a freshwater species. Use ocean scoring instead.")
         return {}
 
