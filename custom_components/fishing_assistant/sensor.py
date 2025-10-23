@@ -22,6 +22,7 @@ from .const import (
     PERIOD_FULL_DAY,
 )
 from .score import get_fish_score_forecast
+from .species_loader import SpeciesLoader
 from .tide_proxy import TideProxy
 from .marine_data import MarineDataFetcher
 from .ocean_scoring import OceanFishingScorer
@@ -57,6 +58,11 @@ async def _setup_freshwater_sensors(hass, config_entry, async_add_entities):
     timezone = data["timezone"]
     elevation = data["elevation"]
     period_type = data.get(CONF_TIME_PERIODS, PERIOD_FULL_DAY)
+    weather_entity = data.get(CONF_WEATHER_ENTITY)
+
+    # Initialize species loader
+    species_loader = SpeciesLoader(hass)
+    await species_loader.async_load()
 
     for fish in fish_list:
         sensors.append(
@@ -69,6 +75,8 @@ async def _setup_freshwater_sensors(hass, config_entry, async_add_entities):
                 body_type=body_type,
                 elevation=elevation,
                 period_type=period_type,
+                weather_entity=weather_entity,
+                species_loader=species_loader,
                 config_entry_id=config_entry.entry_id
             )
         )
@@ -178,13 +186,14 @@ class FishScoreSensor(SensorEntity):
 
     should_poll = True
 
-    def __init__(self, name, fish, lat, lon, body_type, timezone, elevation, period_type, config_entry_id):
+    def __init__(self, name, fish, lat, lon, body_type, timezone, elevation, period_type, weather_entity, species_loader, config_entry_id):
         self._last_update_hour = None
         self._config_entry_id = config_entry_id
         self._device_identifier = f"{name}_{lat}_{lon}"
         self._name = f"{name.lower().replace(' ', '_')}_{fish}_score"
         self._friendly_name = f"{name} ({fish.title()}) Fishing Score"
         self._state = None
+        self._species_loader = species_loader
         self._attrs = {
             "fish": fish,
             "location": name,
@@ -194,6 +203,7 @@ class FishScoreSensor(SensorEntity):
             "timezone": timezone,
             "elevation": elevation,
             "period_type": period_type,
+            "weather_entity": weather_entity,
         }
 
     @property
@@ -246,21 +256,28 @@ class FishScoreSensor(SensorEntity):
         if self._last_update_hour == now.hour:
             return
 
+        weather_entity_id = self._attrs.get("weather_entity")
+        if not weather_entity_id:
+            _LOGGER.error("No weather entity configured for freshwater sensor")
+            return
+
         forecast = await get_fish_score_forecast(
             hass=self.hass,
-            fish=self._attrs["fish"],
-            lat=self._attrs["lat"],
-            lon=self._attrs["lon"],
-            timezone=self._attrs["timezone"],
-            elevation=self._attrs["elevation"],
+            fish_list=[self._attrs["fish"]],  # Convert to list
             body_type=self._attrs["body_type"],
+            weather_entity_id=weather_entity_id,
+            latitude=self._attrs["lat"],
+            longitude=self._attrs["lon"],
+            species_loader=self._species_loader,
             period_type=self._attrs["period_type"],
+            days=7,
         )
 
         today_str = datetime.now().date().strftime("%Y-%m-%d")
         today_data = forecast.get(today_str, {})
 
-        self._state = today_data.get("score", 0)
+        # Get the daily average score or best score
+        self._state = today_data.get("daily_avg_score", today_data.get("best_score", 0))
         self._attrs["forecast"] = forecast
         self._last_update_hour = now.hour
 
