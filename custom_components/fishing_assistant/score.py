@@ -303,44 +303,54 @@ def _calculate_species_score(
         season_multiplier = 0.3
     components["Season"] = season_score
 
-    # Temperature Score
+    # Temperature Score (using species temp_range)
     temp = weather_data.get("temperature")
     temp_score = 0.5
     temp_adjustment = 0.0
     if temp is not None:
-        temp_range = profile.get("temperature_range", {})
-        min_temp = temp_range.get("min", 5)
-        max_temp = temp_range.get("max", 30)
-        optimal_min = temp_range.get("optimal_min", 15)
-        optimal_max = temp_range.get("optimal_max", 25)
+        temp_range = profile.get("temp_range", [5, 30])
+        if len(temp_range) == 2:
+            min_temp, max_temp = temp_range
+            # Calculate optimal range (middle 60% of range)
+            temp_span = max_temp - min_temp
+            optimal_min = min_temp + (temp_span * 0.2)
+            optimal_max = max_temp - (temp_span * 0.2)
 
-        if optimal_min <= temp <= optimal_max:
-            temp_score = 1.0
-            temp_adjustment = 0.3
-        elif min_temp <= temp <= max_temp:
-            temp_score = 0.7
-            temp_adjustment = 0.1
-        else:
-            temp_score = 0.3
-            temp_adjustment = -0.2
+            if optimal_min <= temp <= optimal_max:
+                temp_score = 1.0
+                temp_adjustment = 0.3
+            elif min_temp <= temp <= max_temp:
+                temp_score = 0.7
+                temp_adjustment = 0.1
+            else:
+                # Calculate how far outside range
+                if temp < min_temp:
+                    distance = min_temp - temp
+                else:
+                    distance = temp - max_temp
+                temp_score = max(0.2, 0.7 - (distance * 0.05))
+                temp_adjustment = -0.2
     components["Temperature"] = temp_score
     total_adjustment += temp_adjustment
 
-    # Cloud Cover Score
+    # Cloud Cover Score (using species ideal_cloud)
     cloud_cover = weather_data.get("cloud_coverage", 50)
-    if cloud_cover > 60:
+    ideal_cloud = profile.get("ideal_cloud", 50)
+    cloud_diff = abs(cloud_cover - ideal_cloud)
+    
+    if cloud_diff <= 15:
         cloud_score = 1.0
-        cloud_adjustment = 0.1
-    elif cloud_cover < 30:
-        cloud_score = 0.4
-        cloud_adjustment = -0.1
-    else:
+        cloud_adjustment = 0.15
+    elif cloud_diff <= 30:
         cloud_score = 0.7
         cloud_adjustment = 0.0
+    else:
+        cloud_score = 0.4
+        cloud_adjustment = -0.1
     components["Cloud Cover"] = cloud_score
     total_adjustment += cloud_adjustment
 
-    # Wind Score
+    # Wind Score (generic for freshwater)
     wind_speed = weather_data.get("wind_speed", 0)
     if 5 <= wind_speed <= 15:
         wind_score = 1.0
@@ -354,17 +364,32 @@ def _calculate_species_score(
     components["Wind"] = wind_score
     total_adjustment += wind_adjustment
 
-    # Pressure Score
+    # Pressure Score (using species prefers_low_pressure)
     pressure = weather_data.get("pressure", 1013)
-    if 1010 <= pressure <= 1020:
-        pressure_score = 1.0
-        pressure_adjustment = 0.1
-    elif pressure < 1000 or pressure > 1030:
-        pressure_score = 0.4
-        pressure_adjustment = -0.1
+    prefers_low = profile.get("prefers_low_pressure", False)
+    
+    if prefers_low:
+        # Species prefers low pressure (falling barometer)
+        if pressure < 1010:
+            pressure_score = 1.0
+            pressure_adjustment = 0.15
+        elif pressure < 1015:
+            pressure_score = 0.8
+            pressure_adjustment = 0.05
+        else:
+            pressure_score = 0.5
+            pressure_adjustment = -0.05
     else:
-        pressure_score = 0.7
-        pressure_adjustment = 0.0
+        # Species prefers stable/high pressure
+        if 1013 <= pressure <= 1020:
+            pressure_score = 1.0
+            pressure_adjustment = 0.15
+        elif 1010 <= pressure <= 1025:
+            pressure_score = 0.7
+            pressure_adjustment = 0.0
+        else:
+            pressure_score = 0.4
+            pressure_adjustment = -0.1
     components["Pressure"] = pressure_score
     total_adjustment += pressure_adjustment
 
