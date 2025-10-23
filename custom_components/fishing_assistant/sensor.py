@@ -6,8 +6,6 @@ from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
 from homeassistant.const import UnitOfLength, UnitOfSpeed, PERCENTAGE
 from homeassistant.util import dt as dt_util
-from .score import get_fish_score_forecast, get_fish_score
-from .helpers.astro import calculate_astronomy_forecast
 from datetime import datetime, timedelta
 import logging
 
@@ -23,11 +21,12 @@ from .const import (
     CONF_TIME_PERIODS,
     PERIOD_FULL_DAY,
 )
-from .score import get_fish_score_forecast
+from .score import get_fish_score_forecast, get_fish_score
 from .species_loader import SpeciesLoader
 from .tide_proxy import TideProxy
 from .marine_data import MarineDataFetcher
 from .ocean_scoring import OceanFishingScorer
+from .helpers.astro import calculate_astronomy_forecast
 
 _LOGGER = logging.getLogger(__name__)
 
