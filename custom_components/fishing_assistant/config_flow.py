@@ -216,31 +216,37 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     async def async_step_freshwater_weather(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        """Configure weather integration for freshwater."""
+        """Configure weather integration for freshwater (OPTIONAL)."""
         if user_input is not None:
-            if not user_input.get(CONF_WEATHER_ENTITY):
-                return self.async_show_form(
-                    step_id="freshwater_weather",
-                    data_schema=vol.Schema({
-                        vol.Required(CONF_WEATHER_ENTITY): selector.EntitySelector(
-                            selector.EntitySelectorConfig(domain="weather")
-                        ),
-                    }),
-                    errors={"base": "no_weather_entity"},
-                )
+            # Only add weather entity if one was selected and it's not "none"
+            weather_entity = user_input.get(CONF_WEATHER_ENTITY)
+            if weather_entity and weather_entity != "none":
+                self.freshwater_config[CONF_WEATHER_ENTITY] = weather_entity
 
-            self.freshwater_config.update(user_input)
             return await self.async_step_freshwater_thresholds()
+
+        # Get available weather entities
+        weather_entities = []
+        for state in self.hass.states.async_all("weather"):
+            weather_entities.append(state.entity_id)
+
+        # Build options with "none" as first option
+        weather_options = [{"value": "none", "label": "None (use Met.no directly - recommended)"}]
+        for entity in weather_entities:
+            weather_options.append({"value": entity, "label": entity})
 
         return self.async_show_form(
             step_id="freshwater_weather",
             data_schema=vol.Schema({
-                vol.Required(CONF_WEATHER_ENTITY): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain="weather")
+                vol.Optional(CONF_WEATHER_ENTITY, default="none"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=weather_options,
+                        mode="dropdown",
+                    )
                 ),
             }),
             description_placeholders={
-                "info": "Select your weather integration for accurate fishing forecasts."
+                "info": "Weather entity is optional. If not selected, weather data will be fetched directly from Met.no for your specific location coordinates."
             }
         )
 
@@ -603,33 +609,42 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     async def async_step_ocean_weather(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        """Configure weather integration."""
+        """Configure weather integration (OPTIONAL)."""
         if user_input is not None:
-            if not user_input.get(CONF_WEATHER_ENTITY):
-                return self.async_show_form(
-                    step_id="ocean_weather",
-                    data_schema=vol.Schema({
-                        vol.Required(CONF_WEATHER_ENTITY): selector.EntitySelector(
-                            selector.EntitySelectorConfig(domain="weather")
-                        ),
-                    }),
-                    errors={"base": "no_weather_entity"},
-                )
+            # Only add weather entity if one was selected and it's not "none"
+            weather_entity = user_input.get(CONF_WEATHER_ENTITY)
+            if weather_entity and weather_entity != "none":
+                self.ocean_config[CONF_WEATHER_ENTITY] = weather_entity
 
-            self.ocean_config.update(user_input)
             # Set defaults for tide and marine data
             self.ocean_config[CONF_TIDE_MODE] = TIDE_MODE_PROXY
             self.ocean_config[CONF_MARINE_ENABLED] = True
 
             return await self.async_step_ocean_time_periods()
 
+        # Get available weather entities
+        weather_entities = []
+        for state in self.hass.states.async_all("weather"):
+            weather_entities.append(state.entity_id)
+
+        # Build options with "none" as first option
+        weather_options = [{"value": "none", "label": "None (use Met.no directly - recommended)"}]
+        for entity in weather_entities:
+            weather_options.append({"value": entity, "label": entity})
+
         return self.async_show_form(
             step_id="ocean_weather",
             data_schema=vol.Schema({
-                vol.Required(CONF_WEATHER_ENTITY): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain="weather")
+                vol.Optional(CONF_WEATHER_ENTITY, default="none"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=weather_options,
+                        mode="dropdown",
+                    )
                 ),
             }),
+            description_placeholders={
+                "info": "Weather entity is optional. If not selected, weather data will be fetched directly from Met.no for your specific location coordinates."
+            }
         )
 
     async def async_step_ocean_time_periods(self, user_input: dict[str, Any] | None = None) -> FlowResult:
@@ -679,7 +694,6 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_HABITAT_PRESET: self.ocean_config[CONF_HABITAT_PRESET],
                 CONF_TIME_PERIODS: self.ocean_config.get(CONF_TIME_PERIODS, TIME_PERIODS_FULL_DAY),
                 CONF_AUTO_APPLY_THRESHOLDS: False,  # Always show thresholds
-                CONF_WEATHER_ENTITY: self.ocean_config[CONF_WEATHER_ENTITY],
                 CONF_TIDE_MODE: TIDE_MODE_PROXY,  # Always use proxy
                 CONF_MARINE_ENABLED: True,  # Always enabled
                 CONF_THRESHOLDS: {
@@ -690,6 +704,10 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     "max_temperature": user_input["max_temperature"],
                 },
             }
+
+            # Only add weather entity if it was configured
+            if CONF_WEATHER_ENTITY in self.ocean_config:
+                final_config[CONF_WEATHER_ENTITY] = self.ocean_config[CONF_WEATHER_ENTITY]
 
             # Add timezone and elevation
             final_config[CONF_TIMEZONE] = str(self.hass.config.time_zone)

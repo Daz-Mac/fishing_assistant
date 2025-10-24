@@ -27,6 +27,7 @@ from .tide_proxy import TideProxy
 from .marine_data import MarineDataFetcher
 from .ocean_scoring import OceanFishingScorer
 from .helpers.astro import calculate_astronomy_forecast
+from .weather_fetcher import WeatherFetcher
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -65,6 +66,9 @@ async def _setup_freshwater_sensors(hass, config_entry, async_add_entities):
     species_loader = SpeciesLoader(hass)
     await species_loader.async_load_profiles()
 
+    # Initialize weather fetcher
+    weather_fetcher = WeatherFetcher(hass, lat, lon)
+
     for fish in fish_list:
         sensors.append(
             FishScoreSensor(
@@ -77,6 +81,7 @@ async def _setup_freshwater_sensors(hass, config_entry, async_add_entities):
                 elevation=elevation,
                 period_type=period_type,
                 weather_entity=weather_entity,
+                weather_fetcher=weather_fetcher,
                 species_loader=species_loader,
                 config_entry_id=config_entry.entry_id
             )
@@ -102,6 +107,7 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
     # Initialize data fetchers
     tide_proxy = None
     marine_fetcher = None
+    weather_fetcher = WeatherFetcher(hass, lat, lon)
 
     if data.get(CONF_TIDE_MODE) == TIDE_MODE_PROXY:
         tide_proxy = TideProxy(hass, lat, lon)
@@ -116,6 +122,7 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
             config_entry=config_entry,
             tide_proxy=tide_proxy,
             marine_fetcher=marine_fetcher,
+            weather_fetcher=weather_fetcher,
             location_key=location_key,
         )
     )
@@ -159,21 +166,22 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
         )
 
     # Create wind sensors
-    if weather_entity:
-        sensors.append(
-            WindSpeedSensor(
-                hass=hass,
-                config_entry=config_entry,
-                location_key=location_key,
-            )
+    sensors.append(
+        WindSpeedSensor(
+            hass=hass,
+            config_entry=config_entry,
+            weather_fetcher=weather_fetcher,
+            location_key=location_key,
         )
-        sensors.append(
-            WindGustSensor(
-                hass=hass,
-                config_entry=config_entry,
-                location_key=location_key,
-            )
+    )
+    sensors.append(
+        WindGustSensor(
+            hass=hass,
+            config_entry=config_entry,
+            weather_fetcher=weather_fetcher,
+            location_key=location_key,
         )
+    )
 
     async_add_entities(sensors)
 
@@ -187,7 +195,7 @@ class FishScoreSensor(SensorEntity):
 
     should_poll = True
 
-    def __init__(self, name, fish, lat, lon, body_type, timezone, elevation, period_type, weather_entity, species_loader, config_entry_id):
+    def __init__(self, name, fish, lat, lon, body_type, timezone, elevation, period_type, weather_entity, weather_fetcher, species_loader, config_entry_id):
         self._last_update_hour = None
         self._config_entry_id = config_entry_id
         self._device_identifier = f"{name}_{lat}_{lon}"
@@ -195,6 +203,7 @@ class FishScoreSensor(SensorEntity):
         self._friendly_name = f"{name} ({fish.title()}) Fishing Score"
         self._state = None
         self._species_loader = species_loader
+        self._weather_fetcher = weather_fetcher
         self._attrs = {
             "fish": fish,
             "location": name,
@@ -262,23 +271,19 @@ class FishScoreSensor(SensorEntity):
         if self._last_update_hour == now.hour:
             return
         
-        weather_entity_id = self._attrs.get("weather_entity")
-        if not weather_entity_id:
-            _LOGGER.error("No weather entity configured for freshwater sensor")
-            return
-        
         try:
-            # Get current weather data for immediate score calculation
-            weather_state = self.hass.states.get(weather_entity_id)
-            if not weather_state:
-                _LOGGER.error("Weather entity not available: %s", weather_entity_id)
+            # Get current weather data from Met.no API
+            weather_data_raw = await self._weather_fetcher.get_weather()
+            if not weather_data_raw:
+                _LOGGER.error("No weather data available for freshwater sensor")
                 return
             
+            # Normalize key names for compatibility with scoring system
             weather_data = {
-                "temperature": weather_state.attributes.get("temperature"),
-                "wind_speed": weather_state.attributes.get("wind_speed", 0),
-                "cloud_coverage": weather_state.attributes.get("cloud_coverage", 50),
-                "pressure": weather_state.attributes.get("pressure", 1013),
+                "temperature": weather_data_raw.get("air_temperature"),
+                "wind_speed": weather_data_raw.get("wind_speed", 0),
+                "cloud_coverage": weather_data_raw.get("cloud_area_fraction", 50),
+                "pressure": weather_data_raw.get("air_pressure_at_sea_level", 1013),
             }
             
             # Get current astro data
@@ -310,19 +315,21 @@ class FishScoreSensor(SensorEntity):
             self._attrs["breakdown"] = breakdown
             
             # Get 7-day forecast
-            forecast = await get_fish_score_forecast(
-                hass=self.hass,
-                fish_list=[self._attrs["fish"]],
-                body_type=self._attrs["body_type"],
-                weather_entity_id=weather_entity_id,
-                latitude=self._attrs["lat"],
-                longitude=self._attrs["lon"],
-                species_loader=self._species_loader,
-                period_type=self._attrs["period_type"],
-                days=7,
-            )
+            weather_entity_id = self._attrs.get("weather_entity")
+            if weather_entity_id:
+                forecast = await get_fish_score_forecast(
+                    hass=self.hass,
+                    fish_list=[self._attrs["fish"]],
+                    body_type=self._attrs["body_type"],
+                    weather_entity_id=weather_entity_id,
+                    latitude=self._attrs["lat"],
+                    longitude=self._attrs["lon"],
+                    species_loader=self._species_loader,
+                    period_type=self._attrs["period_type"],
+                    days=7,
+                )
+                self._attrs["forecast"] = forecast
             
-            self._attrs["forecast"] = forecast
             self._last_update_hour = now.hour
             
             _LOGGER.debug(
@@ -330,7 +337,7 @@ class FishScoreSensor(SensorEntity):
                 self._name,
                 self._state,
                 self._attrs.get("component_scores"),
-                len(forecast)
+                len(self._attrs.get("forecast", []))
             )
             
         except Exception as e:
@@ -347,12 +354,13 @@ class OceanFishingScoreSensor(SensorEntity):
 
     should_poll = True
 
-    def __init__(self, hass, config_entry, tide_proxy, marine_fetcher, location_key):
+    def __init__(self, hass, config_entry, tide_proxy, marine_fetcher, weather_fetcher, location_key):
         """Initialize the ocean fishing score sensor."""
         self.hass = hass
         self._config_entry = config_entry
         self._tide_proxy = tide_proxy
         self._marine_fetcher = marine_fetcher
+        self._weather_fetcher = weather_fetcher
         self._scorer = OceanFishingScorer(hass, config_entry.data)
 
         data = config_entry.data
@@ -368,12 +376,12 @@ class OceanFishingScoreSensor(SensorEntity):
 
         self._attrs = {
             "location": name,
-            "location_key": location_key,  # Technical key for sensor lookups
+            "location_key": location_key,
             "latitude": lat,
             "longitude": lon,
             "mode": "ocean",
             "habitat": data.get("habitat_preset"),
-            "species_focus": "Unknown",  # Will be updated after scorer initializes
+            "species_focus": "Unknown",
         }
 
     @property
@@ -471,24 +479,24 @@ class OceanFishingScoreSensor(SensorEntity):
             self._state = None
 
     async def _get_weather_data(self):
-        """Get weather data from configured weather entity."""
-        weather_entity_id = self._config_entry.data.get(CONF_WEATHER_ENTITY)
-        if not weather_entity_id:
+        """Get weather data from Met.no API."""
+        try:
+            weather_data_raw = await self._weather_fetcher.get_weather()
+            if not weather_data_raw:
+                return {}
+            
+            # Normalize key names for compatibility with scoring system
+            return {
+                "temperature": weather_data_raw.get("air_temperature"),
+                "wind_speed": weather_data_raw.get("wind_speed", 0),
+                "wind_gust": weather_data_raw.get("wind_speed_of_gust", weather_data_raw.get("wind_speed", 0)),
+                "cloud_cover": weather_data_raw.get("cloud_area_fraction", 50),
+                "precipitation_probability": weather_data_raw.get("probability_of_precipitation", 0),
+                "pressure": weather_data_raw.get("air_pressure_at_sea_level", 1013),
+            }
+        except Exception as e:
+            _LOGGER.error(f"Error fetching weather data: {e}")
             return {}
-
-        weather_state = self.hass.states.get(weather_entity_id)
-        if not weather_state:
-            return {}
-
-        attrs = weather_state.attributes
-        return {
-            "temperature": attrs.get("temperature"),
-            "wind_speed": attrs.get("wind_speed", 0),
-            "wind_gust": attrs.get("wind_gust_speed", attrs.get("wind_speed", 0)),
-            "cloud_cover": attrs.get("cloud_coverage", 50),
-            "precipitation_probability": attrs.get("precipitation_probability", 0),
-            "pressure": attrs.get("pressure", 1013),
-        }
 
     async def _get_astro_data(self):
         """Get astronomical data from Home Assistant."""
@@ -811,10 +819,11 @@ class WindSpeedSensor(SensorEntity):
 
     should_poll = True
 
-    def __init__(self, hass, config_entry, location_key):
+    def __init__(self, hass, config_entry, weather_fetcher, location_key):
         """Initialize the wind speed sensor."""
         self.hass = hass
         self._config_entry = config_entry
+        self._weather_fetcher = weather_fetcher
 
         data = config_entry.data
         name = data["name"]
@@ -867,15 +876,9 @@ class WindSpeedSensor(SensorEntity):
     async def async_update(self):
         """Update wind speed."""
         try:
-            weather_entity_id = self._config_entry.data.get(CONF_WEATHER_ENTITY)
-            if not weather_entity_id:
-                return
-
-            weather_state = self.hass.states.get(weather_entity_id)
-            if not weather_state:
-                return
-
-            self._state = weather_state.attributes.get("wind_speed")
+            weather_data = await self._weather_fetcher.get_weather()
+            if weather_data:
+                self._state = weather_data.get("wind_speed")
         except Exception as e:
             _LOGGER.error(f"Error updating wind speed: {e}")
             self._state = None
@@ -889,10 +892,11 @@ class WindGustSensor(SensorEntity):
 
     should_poll = True
 
-    def __init__(self, hass, config_entry, location_key):
+    def __init__(self, hass, config_entry, weather_fetcher, location_key):
         """Initialize the wind gust sensor."""
         self.hass = hass
         self._config_entry = config_entry
+        self._weather_fetcher = weather_fetcher
 
         data = config_entry.data
         name = data["name"]
@@ -945,19 +949,13 @@ class WindGustSensor(SensorEntity):
     async def async_update(self):
         """Update wind gust speed."""
         try:
-            weather_entity_id = self._config_entry.data.get(CONF_WEATHER_ENTITY)
-            if not weather_entity_id:
-                return
-
-            weather_state = self.hass.states.get(weather_entity_id)
-            if not weather_state:
-                return
-
-            # Try wind_gust_speed first, fallback to wind_speed
-            self._state = weather_state.attributes.get(
-                "wind_gust_speed",
-                weather_state.attributes.get("wind_speed")
-            )
+            weather_data = await self._weather_fetcher.get_weather()
+            if weather_data:
+                # Try wind_speed_of_gust first, fallback to wind_speed
+                self._state = weather_data.get(
+                    "wind_speed_of_gust",
+                    weather_data.get("wind_speed")
+                )
         except Exception as e:
             _LOGGER.error(f"Error updating wind gust: {e}")
             self._state = None
