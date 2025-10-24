@@ -246,7 +246,7 @@ class FishScoreSensor(SensorEntity):
             "via_device": None
         }
 
-async def async_update(self):
+    async def async_update(self):
     """Fetch the 7-day forecast and set today's score as state."""
     now = datetime.now()
     update_hours = [0, 6, 12, 18]
