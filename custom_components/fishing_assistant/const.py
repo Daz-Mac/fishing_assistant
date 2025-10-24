@@ -54,6 +54,11 @@ HABITAT_ROCKY_POINT = "rocky_point"
 HABITAT_HARBOUR = "harbour"
 HABITAT_REEF = "reef"
 
+# Freshwater body type constants (used as habitat equivalents)
+BODY_TYPE_LAKE = "lake"
+BODY_TYPE_RIVER = "river"
+BODY_TYPE_POND = "pond"
+
 HABITAT_PRESETS = {
     HABITAT_OPEN_BEACH: {
         "name": "Open Sandy Beach",
@@ -98,6 +103,34 @@ HABITAT_PRESETS = {
         "tide_weight": 0.3,
         "wind_weight": 0.25,
         "safety_critical": True,
+    },
+    # Freshwater body types
+    BODY_TYPE_LAKE: {
+        "name": "Lake",
+        "description": "Open lake fishing",
+        "max_wind_speed": 25,  # km/h
+        "max_gust_speed": 40,  # km/h (estimated from wind)
+        "max_wave": 0.5,  # meters (estimated from wind)
+        "wind_weight": 0.3,
+        "safety_critical": True,
+    },
+    BODY_TYPE_RIVER: {
+        "name": "River",
+        "description": "River or stream fishing",
+        "max_wind_speed": 30,  # km/h
+        "max_gust_speed": 45,  # km/h (estimated from wind)
+        "max_wave": 0.3,  # meters (minimal waves in rivers)
+        "wind_weight": 0.2,
+        "safety_critical": False,
+    },
+    BODY_TYPE_POND: {
+        "name": "Pond",
+        "description": "Small pond or protected water",
+        "max_wind_speed": 35,  # km/h
+        "max_gust_speed": 50,  # km/h (estimated from wind)
+        "max_wave": 0.2,  # meters (minimal waves in ponds)
+        "wind_weight": 0.1,
+        "safety_critical": False,
     },
 }
 

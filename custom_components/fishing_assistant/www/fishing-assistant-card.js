@@ -211,6 +211,27 @@ class FishingAssistantCard extends HTMLElement {
           max_wind: 20,
           max_gust: 35,
           max_wave: 1.5
+        },
+        'lake': {
+          name: 'Lake',
+          icon: '🏞️',
+          max_wind: 25,
+          max_gust: 40,
+          max_wave: 0.5
+        },
+        'river': {
+          name: 'River',
+          icon: '🌊',
+          max_wind: 30,
+          max_gust: 45,
+          max_wave: 0.3
+        },
+        'pond': {
+          name: 'Pond',
+          icon: '💧',
+          max_wind: 35,
+          max_gust: 50,
+          max_wave: 0.2
         }
       };
       return habitatMap[habitatPreset] || null;
@@ -922,7 +943,28 @@ class FishingAssistantCard extends HTMLElement {
         max_wind: 20,
         max_gust: 35,
         max_wave: 1.5
-      }
+      },
+      'lake': {
+        name: 'Lake',
+        icon: '🏞️',
+        max_wind: 25,
+        max_gust: 40,
+        max_wave: 0.5
+      },
+      'river': {
+        name: 'River',
+        icon: '🌊',
+        max_wind: 30,
+        max_gust: 45,
+        max_wave: 0.3
+      },
+      'pond': {
+        name: 'Pond',
+        icon: '💧',
+        max_wind: 35,
+        max_gust: 50,
+        max_wave: 0.2
+      }      
     };
     return habitatMap[habitatPreset] || null;
   }

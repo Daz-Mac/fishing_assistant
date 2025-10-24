@@ -201,6 +201,7 @@ class FishScoreSensor(SensorEntity):
             "lat": lat,
             "lon": lon,
             "body_type": body_type,
+            "habitat": body_type,
             "timezone": timezone,
             "elevation": elevation,
             "period_type": period_type,
