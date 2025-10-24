@@ -234,6 +234,10 @@ class FishScoreSensor(SensorEntity):
     @property
     def extra_state_attributes(self):
         return self._attrs
+    
+    @property
+    def native_unit_of_measurement(self):
+        return "/10"
 
     @property
     def device_info(self):

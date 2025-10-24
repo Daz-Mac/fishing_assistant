@@ -82,16 +82,19 @@ def get_fish_score(
         "target_species": [p.get("name", p["id"]) for p in profiles],
     }
 
-    # Generate summary
-    if final_score >= 0.7:
+    # Scale to 0-10 (matching ocean scoring)
+    final_score_scaled = final_score * 10
+
+    # Generate summary (using scaled score)
+    if final_score_scaled >= 7:
         summary = "Excellent conditions"
-    elif final_score >= 0.4:
+    elif final_score_scaled >= 4:
         summary = "Good conditions"
     else:
         summary = "Poor conditions"
 
     return {
-        "score": round(final_score, 2),
+        "score": round(final_score_scaled, 1),
         "breakdown": breakdown,
         "component_scores": component_scores,
         "conditions_summary": summary,
