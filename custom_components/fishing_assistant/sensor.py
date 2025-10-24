@@ -305,6 +305,7 @@ class FishScoreSensor(SensorEntity):
             # Set current score and component scores
             self._state = current_result.get("score", 0)
             self._attrs["component_scores"] = current_result.get("component_scores", {})
+            self._attrs["breakdown"] = current_result.get("breakdown", {})
             
             # Get 7-day forecast
             forecast = await get_fish_score_forecast(
