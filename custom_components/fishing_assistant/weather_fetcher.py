@@ -11,7 +11,7 @@ METNO_API_URL = "https://api.met.no/weatherapi/locationforecast/2.0/compact"
 
 # User agent required by Met.no - MUST include contact info per their ToS
 # Update this with your actual contact information
-USER_AGENT = "HomeAssistant-FishingAssistant/1.0 +https://github.com/Daz-Mac/fishing_assistant"
+USER_AGENT = "HomeAssistant-FishingAssistant/1.0 github.com/Daz-Mac/fishing_assistant"
 
 # Global cache to share weather data across all sensors at the same location
 _GLOBAL_CACHE = {}
