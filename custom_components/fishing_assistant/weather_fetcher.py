@@ -1,6 +1,7 @@
 """Weather data fetcher using Met.no API."""
 import logging
 import aiohttp
+import asyncio
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 
@@ -10,11 +11,14 @@ _LOGGER = logging.getLogger(__name__)
 METNO_API_URL = "https://api.met.no/weatherapi/locationforecast/2.0/compact"
 
 # User agent required by Met.no - MUST include contact info per their ToS
-# Format: "AppName/Version +URL" or "AppName/Version contact@email.com"
+# Format: "AcmeWeatherApp/0.9 github.com/acmeweatherapp"
 USER_AGENT = "HomeAssistant-FishingAssistant/1.0 github.com/Daz-Mac/fishing_assistant"
 
 # Global cache to share weather data across all sensors at the same location
 _GLOBAL_CACHE = {}
+
+# Global locks to prevent multiple simultaneous requests for the same location
+_FETCH_LOCKS = {}
 
 
 class WeatherFetcher:
@@ -35,6 +39,10 @@ class WeatherFetcher:
         self._cache_key = f"{self.latitude}_{self.longitude}"
         # Cache for 2 hours to respect rate limits and avoid unnecessary traffic
         self._cache_duration = timedelta(hours=2)
+        
+        # Create a lock for this location if it doesn't exist
+        if self._cache_key not in _FETCH_LOCKS:
+            _FETCH_LOCKS[self._cache_key] = asyncio.Lock()
 
     async def get_weather_data(self) -> Dict:
         """Get current weather data for the location.
@@ -55,108 +63,143 @@ class WeatherFetcher:
                 _LOGGER.debug("Using cached weather data for %s, %s", self.latitude, self.longitude)
                 return cache_entry["data"]
 
-        try:
-            headers = {
-                "User-Agent": USER_AGENT,
-                "Accept-Encoding": "gzip, deflate",  # Required per RFC 2616
-            }
-            
-            params = {
-                "lat": self.latitude,
-                "lon": self.longitude,
-            }
-
-            # Check if we have cached data with Last-Modified header
-            if_modified_since = None
+        # Use a lock to prevent multiple simultaneous requests for the same location
+        async with _FETCH_LOCKS[self._cache_key]:
+            # Check cache again after acquiring lock (another request may have populated it)
             if self._cache_key in _GLOBAL_CACHE:
-                last_modified = _GLOBAL_CACHE[self._cache_key].get("last_modified")
-                if last_modified:
-                    if_modified_since = last_modified
-                    headers["If-Modified-Since"] = last_modified
+                cache_entry = _GLOBAL_CACHE[self._cache_key]
+                if datetime.now() - cache_entry["time"] < self._cache_duration:
+                    _LOGGER.debug("Using cached weather data for %s, %s (from lock wait)", self.latitude, self.longitude)
+                    return cache_entry["data"]
 
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    METNO_API_URL,
-                    headers=headers,
-                    params=params,
-                    timeout=aiohttp.ClientTimeout(total=10)
-                ) as response:
-                    # Handle 304 Not Modified - data hasn't changed
-                    if response.status == 304:
-                        _LOGGER.debug("Weather data not modified for %s, %s", self.latitude, self.longitude)
-                        # Update cache time but keep existing data
-                        if self._cache_key in _GLOBAL_CACHE:
-                            _GLOBAL_CACHE[self._cache_key]["time"] = datetime.now()
-                            return _GLOBAL_CACHE[self._cache_key]["data"]
-                    
-                    # Handle 429 Rate Limit
-                    if response.status == 429:
-                        _LOGGER.error(
-                            "Met.no API rate limit (429) exceeded for %s, %s. "
-                            "Using cached/fallback data. Check your request frequency.",
+            try:
+                headers = {
+                    "User-Agent": USER_AGENT,
+                    "Accept-Encoding": "gzip, deflate",  # Required per RFC 2616
+                }
+                
+                params = {
+                    "lat": self.latitude,
+                    "lon": self.longitude,
+                }
+
+                # Check if we have cached data with Last-Modified header
+                if_modified_since = None
+                if self._cache_key in _GLOBAL_CACHE:
+                    last_modified = _GLOBAL_CACHE[self._cache_key].get("last_modified")
+                    if last_modified:
+                        if_modified_since = last_modified
+                        headers["If-Modified-Since"] = last_modified
+
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        METNO_API_URL,
+                        headers=headers,
+                        params=params,
+                        timeout=aiohttp.ClientTimeout(total=10)
+                    ) as response:
+                        # Handle 304 Not Modified - data hasn't changed
+                        if response.status == 304:
+                            _LOGGER.debug("Weather data not modified for %s, %s", self.latitude, self.longitude)
+                            # Update cache time but keep existing data
+                            if self._cache_key in _GLOBAL_CACHE:
+                                _GLOBAL_CACHE[self._cache_key]["time"] = datetime.now()
+                                return _GLOBAL_CACHE[self._cache_key]["data"]
+                        
+                        # Handle 429 Rate Limit
+                        if response.status == 429:
+                            _LOGGER.error(
+                                "Met.no API rate limit (429) exceeded for %s, %s. "
+                                "Using cached/fallback data. Check your request frequency.",
+                                self.latitude,
+                                self.longitude
+                            )
+                            # Return cached data if available, even if expired
+                            if self._cache_key in _GLOBAL_CACHE:
+                                return _GLOBAL_CACHE[self._cache_key]["data"]
+                            # Cache the fallback data to prevent repeated requests
+                            fallback = self._get_fallback_data()
+                            self._cache_fallback(fallback)
+                            return fallback
+                        
+                        # Handle 403 Forbidden
+                        if response.status == 403:
+                            _LOGGER.error(
+                                "Met.no API returned 403 Forbidden for %s, %s. "
+                                "Possible causes: Invalid User-Agent (must include contact info), "
+                                "coordinates with >4 decimals, or ToS violation. "
+                                "See https://api.met.no/doc/TermsOfService",
+                                self.latitude,
+                                self.longitude
+                            )
+                            # Cache the fallback data to prevent repeated requests
+                            fallback = self._get_fallback_data()
+                            self._cache_fallback(fallback)
+                            return fallback
+                        
+                        # Handle 203 Non-Authoritative (deprecated API version warning)
+                        if response.status == 203:
+                            _LOGGER.warning(
+                                "Met.no API version is deprecated (status 203). "
+                                "This version will be terminated soon. Update integration."
+                            )
+                        
+                        if response.status not in (200, 203):
+                            _LOGGER.error(
+                                "Met.no API returned status %s for location %s, %s",
+                                response.status,
+                                self.latitude,
+                                self.longitude
+                            )
+                            # Cache the fallback data to prevent repeated requests
+                            fallback = self._get_fallback_data()
+                            self._cache_fallback(fallback)
+                            return fallback
+
+                        data = await response.json()
+                        weather_data = self._parse_metno_data(data)
+                        
+                        # Store Last-Modified header for future If-Modified-Since requests
+                        last_modified = response.headers.get("Last-Modified")
+                        
+                        # Cache the result globally
+                        _GLOBAL_CACHE[self._cache_key] = {
+                            "data": weather_data,
+                            "time": datetime.now(),
+                            "last_modified": last_modified
+                        }
+                        
+                        _LOGGER.info(
+                            "Successfully fetched fresh weather data for %s, %s (cached for 2 hours)",
                             self.latitude,
                             self.longitude
                         )
-                        # Return cached data if available, even if expired
-                        if self._cache_key in _GLOBAL_CACHE:
-                            return _GLOBAL_CACHE[self._cache_key]["data"]
-                        return self._get_fallback_data()
-                    
-                    # Handle 403 Forbidden
-                    if response.status == 403:
-                        _LOGGER.error(
-                            "Met.no API returned 403 Forbidden for %s, %s. "
-                            "Possible causes: Invalid User-Agent (must include contact info), "
-                            "coordinates with >4 decimals, or ToS violation. "
-                            "See https://api.met.no/doc/TermsOfService",
-                            self.latitude,
-                            self.longitude
-                        )
-                        return self._get_fallback_data()
-                    
-                    # Handle 203 Non-Authoritative (deprecated API version warning)
-                    if response.status == 203:
-                        _LOGGER.warning(
-                            "Met.no API version is deprecated (status 203). "
-                            "This version will be terminated soon. Update integration."
-                        )
-                    
-                    if response.status not in (200, 203):
-                        _LOGGER.error(
-                            "Met.no API returned status %s for location %s, %s",
-                            response.status,
-                            self.latitude,
-                            self.longitude
-                        )
-                        return self._get_fallback_data()
+                        
+                        return weather_data
 
-                    data = await response.json()
-                    weather_data = self._parse_metno_data(data)
-                    
-                    # Store Last-Modified header for future If-Modified-Since requests
-                    last_modified = response.headers.get("Last-Modified")
-                    
-                    # Cache the result globally
-                    _GLOBAL_CACHE[self._cache_key] = {
-                        "data": weather_data,
-                        "time": datetime.now(),
-                        "last_modified": last_modified
-                    }
-                    
-                    _LOGGER.info(
-                        "Successfully fetched fresh weather data for %s, %s (cached for 2 hours)",
-                        self.latitude,
-                        self.longitude
-                    )
-                    
-                    return weather_data
+            except aiohttp.ClientError as e:
+                _LOGGER.error("Error fetching weather from Met.no: %s", e)
+                fallback = self._get_fallback_data()
+                self._cache_fallback(fallback)
+                return fallback
+            except Exception as e:
+                _LOGGER.error("Unexpected error fetching weather: %s", e, exc_info=True)
+                fallback = self._get_fallback_data()
+                self._cache_fallback(fallback)
+                return fallback
 
-        except aiohttp.ClientError as e:
-            _LOGGER.error("Error fetching weather from Met.no: %s", e)
-            return self._get_fallback_data()
-        except Exception as e:
-            _LOGGER.error("Unexpected error fetching weather: %s", e, exc_info=True)
-            return self._get_fallback_data()
+    def _cache_fallback(self, fallback_data: Dict) -> None:
+        """Cache fallback data to prevent repeated failed requests.
+        
+        Args:
+            fallback_data: The fallback weather data to cache
+        """
+        _GLOBAL_CACHE[self._cache_key] = {
+            "data": fallback_data,
+            "time": datetime.now(),
+            "last_modified": None
+        }
+        _LOGGER.debug("Cached fallback data for %s, %s to prevent repeated requests", self.latitude, self.longitude)
 
     def _parse_metno_data(self, data: Dict) -> Dict:
         """Parse Met.no API response into our weather data format.
