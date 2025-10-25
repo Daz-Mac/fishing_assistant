@@ -10,7 +10,8 @@ from .data_schema import (
     MarineConditions,
     FishingScore,
     HourlyForecast,
-    SpeciesScore
+    SpeciesScore,
+    ScoringResult
 )
 from .data_formatter import DataFormatter
 from .const import (
@@ -50,11 +51,6 @@ class OceanFishingScorer(BaseScorer):
 
     def __init__(self, hass, config: Dict, species_profiles: dict[str, Any] = None):
         """Initialize the scorer."""
-        # Initialize BaseScorer with species profiles
-        if species_profiles is None:
-            species_profiles = {}
-        super().__init__(species_profiles)
-        
         self.hass = hass
         self.config = config
         self.formatter = DataFormatter()
@@ -63,6 +59,22 @@ class OceanFishingScorer(BaseScorer):
         self._initialized = False
         self._astro_forecast_cache = None
         self._astro_cache_time = None
+        
+        # Initialize BaseScorer with species profiles
+        if species_profiles is None:
+            species_profiles = {}
+        
+        # Get coordinates from config
+        latitude = config.get("latitude", 0.0)
+        longitude = config.get("longitude", 0.0)
+        species_id = config.get(CONF_SPECIES_ID, "general_mixed")
+        
+        super().__init__(
+            latitude=latitude,
+            longitude=longitude,
+            species=[species_id],
+            species_profiles=species_profiles
+        )
 
     async def async_initialize(self):
         """Initialize the scorer asynchronously."""
@@ -134,41 +146,123 @@ class OceanFishingScorer(BaseScorer):
             "wave_preference": "moderate",
         }
 
+    # Implement abstract methods from BaseScorer
     def calculate_score(
         self,
-        weather_data: dict[str, Any],
-        marine_data: dict[str, Any] | None = None,
-        species_name: str | None = None
-    ) -> FishingScore:
-        """Calculate ocean fishing score - BaseScorer interface."""
+        weather: Dict[str, Any],
+        astro: Dict[str, Any],
+        tide: Optional[Dict[str, Any]] = None,
+        marine: Optional[Dict[str, Any]] = None,
+        current_time: Optional[Any] = None,
+    ) -> ScoringResult:
+        """Calculate the fishing score based on conditions."""
         try:
-            # Use legacy calculation method
-            tide_data = marine_data.get("tide_data", {}) if marine_data else {}
-            astro_data = weather_data.get("astro_data", {})
-            target_time = datetime.now()
+            if current_time is None:
+                current_time = datetime.now()
             
-            # Call legacy method
+            # Call legacy calculation method
             result = self._legacy_calculate_score(
-                weather_data=weather_data,
-                tide_data=tide_data,
-                marine_data=marine_data,
-                astro_data=astro_data,
-                target_time=target_time
+                weather_data=weather,
+                tide_data=tide or {},
+                marine_data=marine or {},
+                astro_data=astro,
+                target_time=current_time
             )
             
-            # Convert to new format
-            return FishingScore(
-                score=result["score"],
-                conditions=result["conditions_summary"],
-                factors=result.get("safety_reasons", []),
-                species_scores=[],
-                hourly_forecast=[],
-                timestamp=datetime.now().isoformat()
-            )
+            # Convert to ScoringResult format
+            return {
+                "score": result["score"],
+                "breakdown": result.get("breakdown", {}),
+                "component_scores": result.get("breakdown", {}).get("component_scores", {}),
+                "conditions_summary": result.get("conditions_summary", ""),
+                "safety": result.get("safety", "unknown"),
+                "safety_reasons": result.get("safety_reasons", []),
+            }
             
         except Exception as e:
-            _LOGGER.error("Error calculating ocean score: %s", e)
-            return self._get_error_score()
+            _LOGGER.error("Error calculating ocean score: %s", e, exc_info=True)
+            return {
+                "score": 0.0,
+                "breakdown": {},
+                "component_scores": {},
+                "conditions_summary": "Error calculating score",
+                "safety": "unknown",
+                "safety_reasons": ["Error during calculation"],
+            }
+
+    def _score_temperature(self, temperature: float) -> float:
+        """Score based on temperature."""
+        # Ocean fishing is less temperature-sensitive than freshwater
+        # Most species are active in a wide range
+        if 10 <= temperature <= 25:
+            return 10.0
+        elif 5 <= temperature <= 30:
+            return 7.0
+        else:
+            return 5.0
+
+    def _score_wind(self, wind_speed: float, wind_gust: float) -> float:
+        """Score based on wind conditions."""
+        if wind_speed < 5:
+            return 6.0  # Too calm
+        elif wind_speed < 15:
+            return 10.0  # Ideal
+        elif wind_speed < 25:
+            return 7.0  # Moderate
+        elif wind_speed < 35:
+            return 4.0  # Strong
+        else:
+            return 2.0  # Dangerous
+
+    def _score_pressure(self, pressure: float) -> float:
+        """Score based on barometric pressure."""
+        if 1013 <= pressure <= 1020:
+            return 10.0
+        elif 1008 <= pressure < 1013:
+            return 8.0  # Slightly low, often good
+        elif 1020 < pressure <= 1025:
+            return 7.0  # Slightly high
+        elif 1000 <= pressure < 1008:
+            return 6.0  # Low pressure
+        elif pressure > 1025:
+            return 5.0  # High pressure
+        else:
+            return 4.0  # Very low pressure
+
+    def _score_moon(self, moon_phase: Optional[float]) -> float:
+        """Score based on moon phase."""
+        if moon_phase is None:
+            return 5.0
+        
+        # New moon (0) and full moon (0.5) are typically best
+        if moon_phase < 0.1 or moon_phase > 0.9:
+            return 10.0  # New moon
+        elif 0.4 < moon_phase < 0.6:
+            return 9.0  # Full moon
+        elif 0.2 < moon_phase < 0.3 or 0.7 < moon_phase < 0.8:
+            return 6.0  # Quarter moons
+        else:
+            return 7.0  # In between
+
+    def _score_time_of_day(self, current_time: Any, astro: Dict[str, Any]) -> float:
+        """Score based on time of day."""
+        light_condition = self._determine_light_condition(astro, current_time)
+        
+        if not self.species_profile:
+            return 5.0
+        
+        light_pref = self.species_profile.get("light_preference", "dawn_dusk")
+        
+        score_map = {
+            "day": {LIGHT_DAY: 10.0, LIGHT_DAWN: 7.0, LIGHT_DUSK: 7.0, LIGHT_NIGHT: 3.0},
+            "night": {LIGHT_NIGHT: 10.0, LIGHT_DUSK: 7.0, LIGHT_DAWN: 6.0, LIGHT_DAY: 2.0},
+            "dawn": {LIGHT_DAWN: 10.0, LIGHT_DAY: 7.0, LIGHT_DUSK: 6.0, LIGHT_NIGHT: 4.0},
+            "dusk": {LIGHT_DUSK: 10.0, LIGHT_NIGHT: 7.0, LIGHT_DAWN: 6.0, LIGHT_DAY: 4.0},
+            "dawn_dusk": {LIGHT_DAWN: 10.0, LIGHT_DUSK: 10.0, LIGHT_DAY: 6.0, LIGHT_NIGHT: 5.0},
+            "low_light": {LIGHT_DAWN: 10.0, LIGHT_DUSK: 10.0, LIGHT_NIGHT: 9.0, LIGHT_DAY: 4.0},
+        }
+        
+        return score_map.get(light_pref, {}).get(light_condition, 5.0)
 
     def _legacy_calculate_score(
         self,
@@ -228,13 +322,13 @@ class OceanFishingScorer(BaseScorer):
         scores["light"] = self._score_light(light_condition)
 
         # Moon phase score
-        scores["moon"] = self._score_moon(moon_phase)
+        scores["moon"] = self._score_moon_legacy(moon_phase)
 
         # Seasonal score
         scores["season"] = self._score_season(current_time)
 
         # Barometric pressure score
-        scores["pressure"] = self._score_pressure(pressure)
+        scores["pressure"] = self._score_pressure_legacy(pressure)
 
         # Calculate weighted total
         total_score = sum(scores[key] * weights[key] for key in scores)
@@ -1087,8 +1181,8 @@ class OceanFishingScorer(BaseScorer):
 
         return score_map.get(light_pref, {}).get(light_condition, 0.5)
 
-    def _score_moon(self, moon_phase: float) -> float:
-        """Score based on moon phase (0-1)."""
+    def _score_moon_legacy(self, moon_phase: float) -> float:
+        """Score based on moon phase (0-1) - legacy method."""
         try:
             moon_phase = max(0.0, min(1.0, float(moon_phase)))
         except (ValueError, TypeError):
@@ -1140,8 +1234,8 @@ class OceanFishingScorer(BaseScorer):
             except (ValueError, TypeError):
                 return 0.2
 
-    def _score_pressure(self, pressure: float) -> float:
-        """Score based on barometric pressure (0-1)."""
+    def _score_pressure_legacy(self, pressure: float) -> float:
+        """Score based on barometric pressure (0-1) - legacy method."""
         try:
             pressure = float(pressure)
         except (ValueError, TypeError):

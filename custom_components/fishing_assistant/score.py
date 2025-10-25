@@ -35,152 +35,342 @@ _LOGGER = logging.getLogger(__name__)
 class FreshwaterFishingScorer(BaseScorer):
     """Freshwater fishing scoring implementation."""
 
-    def __init__(self, species_profiles: dict[str, Any]):
-        """Initialize the freshwater scorer."""
-        super().__init__(species_profiles)
+    def __init__(
+        self,
+        species_name: str,
+        body_type: str,
+        species_loader: SpeciesLoader,
+        latitude: float = 0.0,
+        longitude: float = 0.0,
+    ):
+        """Initialize the freshwater scorer.
+        
+        Args:
+            species_name: Name of the target species
+            body_type: Type of water body (lake, river, etc.)
+            species_loader: Species loader instance
+            latitude: Location latitude
+            longitude: Location longitude
+        """
+        self.species_name = species_name
+        self.body_type = body_type
+        self.species_loader = species_loader
+        
+        # Get species profile
+        self.species_profile = species_loader.get_species(species_name)
+        if not self.species_profile:
+            _LOGGER.warning(f"Species profile not found: {species_name}")
+            self.species_profile = {}
+        
+        # Initialize parent with required parameters
+        species_profiles = {species_name: self.species_profile}
+        super().__init__(
+            latitude=latitude,
+            longitude=longitude,
+            species=[species_name],
+            species_profiles=species_profiles
+        )
+        
         self.formatter = DataFormatter()
+
+    def _calculate_base_score(
+        self,
+        weather_data: Dict[str, Any],
+        astro_data: Dict[str, Any],
+        target_time: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
+        """Calculate base fishing score.
+        
+        Returns:
+            Dictionary with score and component breakdown
+        """
+        if target_time is None:
+            target_time = datetime.now()
+        
+        components = {}
+        total_adjustment = 0.0
+        
+        # Season/Activity Score
+        current_month = target_time.month
+        active_months = self.species_profile.get("active_months", list(range(1, 13)))
+        if current_month in active_months:
+            season_score = 1.0
+            season_multiplier = 1.0
+        else:
+            season_score = 0.3
+            season_multiplier = 0.3
+        components["Season"] = season_score
+
+        # Temperature Score
+        temp = weather_data.get("temperature")
+        temp_score = 0.5
+        temp_adjustment = 0.0
+        if temp is not None:
+            temp_range = self.species_profile.get("temp_range", [5, 30])
+            if len(temp_range) == 2:
+                min_temp, max_temp = temp_range
+                temp_span = max_temp - min_temp
+                optimal_min = min_temp + (temp_span * 0.2)
+                optimal_max = max_temp - (temp_span * 0.2)
+
+                if optimal_min <= temp <= optimal_max:
+                    temp_score = 1.0
+                    temp_adjustment = 0.3
+                elif min_temp <= temp <= max_temp:
+                    temp_score = 0.7
+                    temp_adjustment = 0.1
+                else:
+                    if temp < min_temp:
+                        distance = min_temp - temp
+                    else:
+                        distance = temp - max_temp
+                    temp_score = max(0.2, 0.7 - (distance * 0.05))
+                    temp_adjustment = -0.2
+        components["Temperature"] = temp_score
+        total_adjustment += temp_adjustment
+
+        # Cloud Cover Score
+        cloud_cover = weather_data.get("cloud_cover", 50)
+        ideal_cloud = self.species_profile.get("ideal_cloud", 50)
+        cloud_diff = abs(cloud_cover - ideal_cloud)
+        
+        if cloud_diff <= 15:
+            cloud_score = 1.0
+            cloud_adjustment = 0.15
+        elif cloud_diff <= 30:
+            cloud_score = 0.7
+            cloud_adjustment = 0.0
+        else:
+            cloud_score = 0.4
+            cloud_adjustment = -0.1
+        components["Cloud Cover"] = cloud_score
+        total_adjustment += cloud_adjustment
+
+        # Wind Score
+        wind_speed = weather_data.get("wind_speed", 0)
+        if 5 <= wind_speed <= 15:
+            wind_score = 1.0
+            wind_adjustment = 0.1
+        elif wind_speed > 25:
+            wind_score = 0.3
+            wind_adjustment = -0.2
+        else:
+            wind_score = 0.7
+            wind_adjustment = 0.0
+        components["Wind"] = wind_score
+        total_adjustment += wind_adjustment
+
+        # Pressure Score
+        pressure = weather_data.get("pressure", 1013)
+        prefers_low = self.species_profile.get("prefers_low_pressure", False)
+        
+        if prefers_low:
+            if pressure < 1010:
+                pressure_score = 1.0
+                pressure_adjustment = 0.15
+            elif pressure < 1015:
+                pressure_score = 0.8
+                pressure_adjustment = 0.05
+            else:
+                pressure_score = 0.5
+                pressure_adjustment = -0.05
+        else:
+            if 1013 <= pressure <= 1020:
+                pressure_score = 1.0
+                pressure_adjustment = 0.15
+            elif 1010 <= pressure <= 1025:
+                pressure_score = 0.7
+                pressure_adjustment = 0.0
+            else:
+                pressure_score = 0.4
+                pressure_adjustment = -0.1
+        components["Pressure"] = pressure_score
+        total_adjustment += pressure_adjustment
+
+        # Time of Day Score
+        hour = target_time.hour
+        if 5 <= hour <= 8 or 17 <= hour <= 20:
+            time_score = 1.0
+            time_adjustment = 0.2
+        else:
+            time_score = 0.6
+            time_adjustment = 0.0
+        components["Time of Day"] = time_score
+        total_adjustment += time_adjustment
+
+        # Calculate final score
+        base_score = 0.5
+        final_score = (base_score + total_adjustment) * season_multiplier
+        final_score = max(0.0, min(1.0, final_score))
+        
+        # Scale to 0-10
+        final_score_scaled = final_score * 10
+
+        return {
+            "score": round(final_score_scaled, 1),
+            "components": components
+        }
+
+    def _get_factor_weights(self) -> Dict[str, float]:
+        """Get factor weights for scoring.
+        
+        Returns:
+            Dictionary of factor weights
+        """
+        return {
+            "temperature": 0.25,
+            "wind": 0.15,
+            "pressure": 0.15,
+            "cloud_cover": 0.15,
+            "time_of_day": 0.15,
+            "season": 0.15,
+        }
 
     def calculate_score(
         self,
-        weather_data: dict[str, Any],
-        species_name: str | None = None
-    ) -> FishingScore:
-        """Calculate freshwater fishing score - wrapper for new structure."""
-        try:
-            # Format weather data
-            conditions = self.formatter.format_weather_conditions(weather_data)
+        weather_data: Dict[str, Any],
+        astro_data: Dict[str, Any],
+        target_time: Optional[datetime] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """Calculate fishing score for current conditions.
+        
+        Args:
+            weather_data: Weather data dictionary
+            astro_data: Astronomical data dictionary
+            target_time: Optional target datetime
             
-            # For now, use legacy calculation but return new format
-            # This maintains backward compatibility
-            astro_data = weather_data.get("astro_data", {})
+        Returns:
+            Dictionary with score, breakdown, and component scores
+        """
+        if target_time is None:
             target_time = datetime.now()
+        
+        try:
+            result = self._calculate_base_score(weather_data, astro_data, target_time)
             
-            if species_name:
-                fish_list = [species_name]
+            # Generate summary
+            score = result["score"]
+            if score >= 7:
+                summary = "Excellent conditions"
+            elif score >= 4:
+                summary = "Good conditions"
             else:
-                fish_list = list(self.species_profiles.keys())[:1]  # Use first species as default
+                summary = "Poor conditions"
             
-            # Use legacy calculation
-            result = self._legacy_get_fish_score(
-                fish_list=fish_list,
-                body_type="lake",  # Default
-                weather_data=weather_data,
-                astro_data=astro_data,
-                target_time=target_time
-            )
-            
-            # Convert to new format
-            return FishingScore(
-                score=result["score"],
-                conditions=result["conditions_summary"],
-                factors=self._extract_factors_from_components(result.get("component_scores", {})),
-                species_scores=[],
-                hourly_forecast=[],
-                timestamp=datetime.now().isoformat()
-            )
-            
+            return {
+                "score": result["score"],
+                "breakdown": {
+                    "species": self.species_name,
+                    "body_type": self.body_type,
+                },
+                "component_scores": result["components"],
+                "conditions_summary": summary,
+            }
         except Exception as e:
-            _LOGGER.error("Error calculating freshwater score: %s", e)
-            return self._get_error_score()
-
-    def _legacy_get_fish_score(
-        self,
-        fish_list: List[str],
-        body_type: str,
-        weather_data: Dict,
-        astro_data: Dict,
-        target_time: datetime,
-    ) -> Dict:
-        """Legacy calculation method - maintains existing functionality."""
-        # Get species profiles
-        profiles = []
-        for fish_id in fish_list:
-            profile = self.species_profiles.get(fish_id)
-            if profile:
-                profiles.append(profile)
-            else:
-                _LOGGER.warning("Species profile not found: %s", fish_id)
-
-        if not profiles:
-            _LOGGER.error("No valid species profiles found")
+            _LOGGER.error(f"Error calculating freshwater score: {e}", exc_info=True)
             return {
                 "score": 0.0,
                 "breakdown": {},
                 "component_scores": {},
-                "conditions_summary": "No species data available",
+                "conditions_summary": "Error calculating score",
             }
 
-        # Calculate scores for each species
-        species_scores = []
-        all_component_scores = []
-        for profile in profiles:
-            score_data = _calculate_species_score(
-                profile, body_type, weather_data, astro_data, target_time
-            )
-            species_scores.append(score_data["score"])
-            all_component_scores.append(score_data["components"])
-
-        # Average the scores
-        final_score = sum(species_scores) / len(species_scores)
-
-        # Average component scores across all species
-        component_scores = {}
-        if all_component_scores:
-            # Get all component keys
-            all_keys = set()
-            for comp in all_component_scores:
-                all_keys.update(comp.keys())
+    async def calculate_forecast(
+        self,
+        weather_entity_id: str,
+        latitude: float,
+        longitude: float,
+        period_type: str = TIME_PERIODS_FULL_DAY,
+        days: int = 7,
+    ) -> Dict:
+        """Calculate fishing score forecast.
+        
+        Args:
+            weather_entity_id: Home Assistant weather entity ID
+            latitude: Location latitude
+            longitude: Location longitude
+            period_type: Time period type (full_day or dawn_dusk)
+            days: Number of days to forecast
             
-            # Average each component
-            for key in all_keys:
-                values = [comp.get(key, 0) for comp in all_component_scores]
-                component_scores[key] = round(sum(values) / len(values), 2)
+        Returns:
+            Dictionary with forecast data
+        """
+        # This method needs access to hass, which should be passed through
+        # For now, return empty dict - this will be called from sensor.py
+        # which has access to hass
+        return {}
 
-        # Generate breakdown
-        breakdown = {
-            "species_count": len(profiles),
-            "body_type": body_type,
-            "target_species": [p.get("name", p["id"]) for p in profiles],
-        }
+    # Implement abstract methods from BaseScorer
+    def _score_temperature(self, temperature: float) -> float:
+        """Score based on temperature."""
+        temp_range = self.species_profile.get("temp_range", [5, 30])
+        if len(temp_range) == 2:
+            min_temp, max_temp = temp_range
+            temp_span = max_temp - min_temp
+            optimal_min = min_temp + (temp_span * 0.2)
+            optimal_max = max_temp - (temp_span * 0.2)
 
-        # Scale to 0-10 (matching ocean scoring)
-        final_score_scaled = final_score * 10
+            if optimal_min <= temperature <= optimal_max:
+                return 10.0
+            elif min_temp <= temperature <= max_temp:
+                return 7.0
+            else:
+                if temperature < min_temp:
+                    distance = min_temp - temperature
+                else:
+                    distance = temperature - max_temp
+                return max(2.0, 7.0 - (distance * 0.5))
+        return 5.0
 
-        # Generate summary (using scaled score)
-        if final_score_scaled >= 7:
-            summary = "Excellent conditions"
-        elif final_score_scaled >= 4:
-            summary = "Good conditions"
+    def _score_wind(self, wind_speed: float, wind_gust: float) -> float:
+        """Score based on wind conditions."""
+        if 5 <= wind_speed <= 15:
+            return 10.0
+        elif wind_speed > 25:
+            return 3.0
         else:
-            summary = "Poor conditions"
+            return 7.0
 
-        return {
-            "score": round(final_score_scaled, 1),
-            "breakdown": breakdown,
-            "component_scores": component_scores,
-            "conditions_summary": summary,
-        }
+    def _score_pressure(self, pressure: float) -> float:
+        """Score based on barometric pressure."""
+        prefers_low = self.species_profile.get("prefers_low_pressure", False)
+        
+        if prefers_low:
+            if pressure < 1010:
+                return 10.0
+            elif pressure < 1015:
+                return 8.0
+            else:
+                return 5.0
+        else:
+            if 1013 <= pressure <= 1020:
+                return 10.0
+            elif 1010 <= pressure <= 1025:
+                return 7.0
+            else:
+                return 4.0
 
-    def _extract_factors_from_components(self, component_scores: Dict) -> List[str]:
-        """Extract human-readable factors from component scores."""
-        factors = []
-        for component, score in component_scores.items():
-            if score >= 0.8:
-                factors.append(f"{component}: Excellent")
-            elif score >= 0.6:
-                factors.append(f"{component}: Good")
-        return factors
+    def _score_moon(self, moon_phase: Optional[float]) -> float:
+        """Score based on moon phase."""
+        if moon_phase is None:
+            return 5.0
+        
+        # New moon and full moon are typically better
+        if moon_phase < 0.1 or moon_phase > 0.9:  # New moon
+            return 9.0
+        elif 0.4 < moon_phase < 0.6:  # Full moon
+            return 9.0
+        else:
+            return 6.0
 
-    def _get_error_score(self) -> FishingScore:
-        """Return error score when calculation fails."""
-        return FishingScore(
-            score=0,
-            conditions="Unknown",
-            factors=["Error calculating score"],
-            species_scores=[],
-            hourly_forecast=[],
-            timestamp=datetime.now().isoformat()
-        )
+    def _score_time_of_day(self, current_time: Any, astro: Dict[str, Any]) -> float:
+        """Score based on time of day."""
+        hour = current_time.hour
+        if 5 <= hour <= 8 or 17 <= hour <= 20:
+            return 10.0
+        else:
+            return 6.0
 
 
 # Legacy function maintained for backward compatibility

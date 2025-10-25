@@ -62,6 +62,37 @@ class BaseScorer(ABC):
         )
     
     @abstractmethod
+    def _calculate_base_score(
+        self,
+        weather: WeatherData,
+        astro: AstroData,
+        tide: Optional[TideData] = None,
+        marine: Optional[MarineData] = None,
+        current_time: Optional[Any] = None,
+    ) -> Dict[str, float]:
+        """Calculate component scores.
+        
+        Args:
+            weather: Formatted weather data
+            astro: Formatted astronomical data
+            tide: Optional formatted tide data
+            marine: Optional formatted marine data
+            current_time: Optional datetime object for time-based scoring
+            
+        Returns:
+            Dictionary of component scores
+        """
+        pass
+    
+    @abstractmethod
+    def _get_factor_weights(self) -> Dict[str, float]:
+        """Get the weights for each scoring factor.
+        
+        Returns:
+            Dictionary mapping factor names to their weights
+        """
+        pass
+    
     def calculate_score(
         self,
         weather: Dict[str, Any],
@@ -71,8 +102,6 @@ class BaseScorer(ABC):
         current_time: Optional[Any] = None,
     ) -> ScoringResult:
         """Calculate the fishing score based on conditions.
-        
-        This is the main scoring method that must be implemented by subclasses.
         
         Args:
             weather: Raw weather data dictionary
@@ -84,7 +113,34 @@ class BaseScorer(ABC):
         Returns:
             ScoringResult with score, breakdown, and component scores
         """
-        pass
+        # Format input data
+        weather_data = format_weather_data(weather)
+        astro_data = format_astro_data(astro)
+        tide_data = format_tide_data(tide) if tide else None
+        marine_data = format_marine_data(marine) if marine else None
+        
+        # Calculate component scores
+        component_scores = self._calculate_base_score(
+            weather_data, astro_data, tide_data, marine_data, current_time
+        )
+        
+        # Get weights and calculate weighted average
+        weights = self._get_factor_weights()
+        final_score = self._weighted_average(component_scores, weights)
+        
+        # Store for later retrieval
+        self._component_scores = component_scores
+        self._conditions_summary = self._format_conditions_text(
+            final_score, weather_data, component_scores
+        )
+        
+        # Log details
+        self._log_scoring_details(final_score, component_scores)
+        
+        # Return formatted result
+        return format_scoring_result(
+            final_score, self._conditions_summary, component_scores
+        )
     
     @abstractmethod
     def _score_temperature(self, temperature: float) -> float:

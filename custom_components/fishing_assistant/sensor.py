@@ -21,8 +21,8 @@ from .const import (
     CONF_TIME_PERIODS,
     PERIOD_FULL_DAY,
 )
-from .score import FreshwaterScorer
-from .ocean_scoring import OceanScorer
+from .score import FreshwaterFishingScorer
+from .ocean_scoring import OceanFishingScorer
 from .species_loader import SpeciesLoader
 from .tide_proxy import TideProxy
 from .marine_data import MarineDataFetcher
@@ -205,7 +205,7 @@ class FishScoreSensor(SensorEntity):
         self._weather_fetcher = weather_fetcher
         
         # Initialize the scorer
-        self._scorer = FreshwaterScorer(
+        self._scorer = FreshwaterFishingScorer(
             species_name=fish,
             body_type=body_type,
             species_loader=species_loader
@@ -386,7 +386,7 @@ class OceanFishingScoreSensor(SensorEntity):
         lon = data["longitude"]
 
         # Initialize the ocean scorer
-        self._scorer = OceanScorer(
+        self._scorer = OceanFishingScorer(
             hass=hass,
             latitude=lat,
             longitude=lon,
