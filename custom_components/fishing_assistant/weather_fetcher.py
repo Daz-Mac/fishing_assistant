@@ -2,8 +2,9 @@
 import logging
 import aiohttp
 import asyncio
+import random
 from datetime import datetime, timedelta
-from typing import Dict, Optional
+from typing import Dict
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -13,6 +14,16 @@ METNO_API_URL = "https://api.met.no/weatherapi/locationforecast/2.0/compact"
 # User agent required by Met.no - MUST include contact info per their ToS
 # Format: "AcmeWeatherApp/0.9 github.com/acmeweatherapp"
 USER_AGENT = "HomeAssistant-FishingAssistant/1.0 github.com/Daz-Mac/fishing_assistant"
+
+# Default weather values used as fallbacks when API fails or data is missing
+DEFAULT_WEATHER_VALUES = {
+    "temperature": 15.0,
+    "wind_speed": 10.0,  # km/h
+    "wind_gust": 15.0,  # km/h
+    "cloud_cover": 50,  # percentage
+    "precipitation_probability": 0,  # percentage
+    "pressure": 1013,  # hPa
+}
 
 # Global cache to share weather data across all sensors at the same location
 _GLOBAL_CACHE = {}
@@ -39,6 +50,8 @@ class WeatherFetcher:
         self._cache_key = f"{self.latitude}_{self.longitude}"
         # Cache for 2 hours to respect rate limits and avoid unnecessary traffic
         self._cache_duration = timedelta(hours=2)
+        # Extended cache for 403 errors to avoid extending the block period
+        self._error_cache_duration = timedelta(hours=24)
         
         # Create a lock for this location if it doesn't exist
         if self._cache_key not in _FETCH_LOCKS:
@@ -59,7 +72,8 @@ class WeatherFetcher:
         # Check global cache first to avoid unnecessary traffic
         if self._cache_key in _GLOBAL_CACHE:
             cache_entry = _GLOBAL_CACHE[self._cache_key]
-            if datetime.now() - cache_entry["time"] < self._cache_duration:
+            cache_duration = cache_entry.get("cache_duration", self._cache_duration)
+            if datetime.now() - cache_entry["time"] < cache_duration:
                 _LOGGER.debug("Using cached weather data for %s, %s", self.latitude, self.longitude)
                 return cache_entry["data"]
 
@@ -68,14 +82,20 @@ class WeatherFetcher:
             # Check cache again after acquiring lock (another request may have populated it)
             if self._cache_key in _GLOBAL_CACHE:
                 cache_entry = _GLOBAL_CACHE[self._cache_key]
-                if datetime.now() - cache_entry["time"] < self._cache_duration:
+                cache_duration = cache_entry.get("cache_duration", self._cache_duration)
+                if datetime.now() - cache_entry["time"] < cache_duration:
                     _LOGGER.debug("Using cached weather data for %s, %s (from lock wait)", self.latitude, self.longitude)
                     return cache_entry["data"]
+
+            # Add random jitter (0-30 seconds) to prevent synchronized requests
+            # Per Met.no ToS: "Don't schedule many requests at the same time"
+            jitter = random.uniform(0, 30)
+            await asyncio.sleep(jitter)
 
             try:
                 headers = {
                     "User-Agent": USER_AGENT,
-                    "Accept-Encoding": "gzip, deflate",  # Required per RFC 2616
+                    "Accept-Encoding": "gzip, deflate",
                 }
                 
                 params = {
@@ -84,11 +104,11 @@ class WeatherFetcher:
                 }
 
                 # Check if we have cached data with Last-Modified header
-                if_modified_since = None
+                # Per Met.no ToS: "use the If-Modified-Since request header to avoid 
+                # repeatedly downloading the same data"
                 if self._cache_key in _GLOBAL_CACHE:
                     last_modified = _GLOBAL_CACHE[self._cache_key].get("last_modified")
                     if last_modified:
-                        if_modified_since = last_modified
                         headers["If-Modified-Since"] = last_modified
 
                 async with aiohttp.ClientSession() as session:
@@ -117,9 +137,9 @@ class WeatherFetcher:
                             # Return cached data if available, even if expired
                             if self._cache_key in _GLOBAL_CACHE:
                                 return _GLOBAL_CACHE[self._cache_key]["data"]
-                            # Cache the fallback data to prevent repeated requests
+                            # Cache the fallback data with extended duration
                             fallback = self._get_fallback_data()
-                            self._cache_fallback(fallback)
+                            self._cache_fallback(fallback, extended=True)
                             return fallback
                         
                         # Handle 403 Forbidden
@@ -128,13 +148,19 @@ class WeatherFetcher:
                                 "Met.no API returned 403 Forbidden for %s, %s. "
                                 "Possible causes: Invalid User-Agent (must include contact info), "
                                 "coordinates with >4 decimals, or ToS violation. "
+                                "Caching for 24 hours to avoid extending block. "
                                 "See https://api.met.no/doc/TermsOfService",
                                 self.latitude,
                                 self.longitude
                             )
-                            # Cache the fallback data to prevent repeated requests
+                            # Return cached data if available, even if expired
+                            if self._cache_key in _GLOBAL_CACHE:
+                                # Extend cache duration to avoid repeated 403s
+                                _GLOBAL_CACHE[self._cache_key]["cache_duration"] = self._error_cache_duration
+                                return _GLOBAL_CACHE[self._cache_key]["data"]
+                            # Cache the fallback data with extended duration (24 hours)
                             fallback = self._get_fallback_data()
-                            self._cache_fallback(fallback)
+                            self._cache_fallback(fallback, extended=True)
                             return fallback
                         
                         # Handle 203 Non-Authoritative (deprecated API version warning)
@@ -151,9 +177,12 @@ class WeatherFetcher:
                                 self.latitude,
                                 self.longitude
                             )
-                            # Cache the fallback data to prevent repeated requests
+                            # Return cached data if available
+                            if self._cache_key in _GLOBAL_CACHE:
+                                return _GLOBAL_CACHE[self._cache_key]["data"]
+                            # Cache the fallback data
                             fallback = self._get_fallback_data()
-                            self._cache_fallback(fallback)
+                            self._cache_fallback(fallback, extended=False)
                             return fallback
 
                         data = await response.json()
@@ -162,11 +191,12 @@ class WeatherFetcher:
                         # Store Last-Modified header for future If-Modified-Since requests
                         last_modified = response.headers.get("Last-Modified")
                         
-                        # Cache the result globally
+                        # Cache the result globally with normal duration
                         _GLOBAL_CACHE[self._cache_key] = {
                             "data": weather_data,
                             "time": datetime.now(),
-                            "last_modified": last_modified
+                            "last_modified": last_modified,
+                            "cache_duration": self._cache_duration
                         }
                         
                         _LOGGER.info(
@@ -179,27 +209,42 @@ class WeatherFetcher:
 
             except aiohttp.ClientError as e:
                 _LOGGER.error("Error fetching weather from Met.no: %s", e)
+                # Return cached data if available
+                if self._cache_key in _GLOBAL_CACHE:
+                    return _GLOBAL_CACHE[self._cache_key]["data"]
                 fallback = self._get_fallback_data()
-                self._cache_fallback(fallback)
+                self._cache_fallback(fallback, extended=False)
                 return fallback
             except Exception as e:
                 _LOGGER.error("Unexpected error fetching weather: %s", e, exc_info=True)
+                # Return cached data if available
+                if self._cache_key in _GLOBAL_CACHE:
+                    return _GLOBAL_CACHE[self._cache_key]["data"]
                 fallback = self._get_fallback_data()
-                self._cache_fallback(fallback)
+                self._cache_fallback(fallback, extended=False)
                 return fallback
 
-    def _cache_fallback(self, fallback_data: Dict) -> None:
+    def _cache_fallback(self, fallback_data: Dict, extended: bool = False) -> None:
         """Cache fallback data to prevent repeated failed requests.
         
         Args:
             fallback_data: The fallback weather data to cache
+            extended: If True, use extended cache duration (24 hours) for 403/429 errors
         """
+        cache_duration = self._error_cache_duration if extended else self._cache_duration
         _GLOBAL_CACHE[self._cache_key] = {
             "data": fallback_data,
             "time": datetime.now(),
-            "last_modified": None
+            "last_modified": None,
+            "cache_duration": cache_duration
         }
-        _LOGGER.debug("Cached fallback data for %s, %s to prevent repeated requests", self.latitude, self.longitude)
+        duration_str = "24 hours" if extended else "2 hours"
+        _LOGGER.debug(
+            "Cached fallback data for %s, %s for %s to prevent repeated requests", 
+            self.latitude, 
+            self.longitude,
+            duration_str
+        )
 
     def _parse_metno_data(self, data: Dict) -> Dict:
         """Parse Met.no API response into our weather data format.
@@ -222,13 +267,28 @@ class WeatherFetcher:
             next_1h = current.get("data", {}).get("next_1_hours", {}).get("details", {})
 
             # Extract data (Met.no uses metric units)
+            # Use defaults from DEFAULT_WEATHER_VALUES if fields are missing
+            wind_speed_ms = instant.get("wind_speed")
+            wind_gust_ms = instant.get("wind_speed_of_gust")
+            
+            # If wind_gust is missing, fall back to wind_speed
+            if wind_gust_ms is None:
+                wind_gust_ms = wind_speed_ms
+            
+            # If wind_speed is missing, use default (convert from km/h to m/s for calculation)
+            if wind_speed_ms is None:
+                wind_speed_ms = DEFAULT_WEATHER_VALUES["wind_speed"] / 3.6
+            
+            if wind_gust_ms is None:
+                wind_gust_ms = DEFAULT_WEATHER_VALUES["wind_gust"] / 3.6
+            
             weather_data = {
-                "temperature": instant.get("air_temperature"),
-                "wind_speed": instant.get("wind_speed", 0) * 3.6,  # m/s to km/h
-                "wind_gust": instant.get("wind_speed_of_gust", instant.get("wind_speed", 0)) * 3.6,  # m/s to km/h
-                "cloud_cover": instant.get("cloud_area_fraction", 50),  # 0-100
-                "precipitation_probability": next_1h.get("probability_of_precipitation", 0),
-                "pressure": instant.get("air_pressure_at_sea_level", 1013),
+                "temperature": instant.get("air_temperature", DEFAULT_WEATHER_VALUES["temperature"]),
+                "wind_speed": wind_speed_ms * 3.6,  # m/s to km/h
+                "wind_gust": wind_gust_ms * 3.6,  # m/s to km/h
+                "cloud_cover": instant.get("cloud_area_fraction", DEFAULT_WEATHER_VALUES["cloud_cover"]),
+                "precipitation_probability": next_1h.get("probability_of_precipitation", DEFAULT_WEATHER_VALUES["precipitation_probability"]),
+                "pressure": instant.get("air_pressure_at_sea_level", DEFAULT_WEATHER_VALUES["pressure"]),
             }
 
             _LOGGER.debug(
@@ -253,16 +313,37 @@ class WeatherFetcher:
         Returns:
             Dictionary with date strings as keys and weather data as values
         """
+        # Use the same cache key with a forecast suffix
+        forecast_cache_key = f"{self._cache_key}_forecast_{days}"
+        
+        # Check cache first
+        if forecast_cache_key in _GLOBAL_CACHE:
+            cache_entry = _GLOBAL_CACHE[forecast_cache_key]
+            cache_duration = cache_entry.get("cache_duration", self._cache_duration)
+            if datetime.now() - cache_entry["time"] < cache_duration:
+                _LOGGER.debug("Using cached forecast data for %s, %s", self.latitude, self.longitude)
+                return cache_entry["data"]
+        
+        # Add random jitter to prevent synchronized requests
+        jitter = random.uniform(0, 30)
+        await asyncio.sleep(jitter)
+        
         try:
             headers = {
                 "User-Agent": USER_AGENT,
-                "Accept-Encoding": "gzip, deflate",  # Required per RFC 2616
+                "Accept-Encoding": "gzip, deflate",
             }
             
             params = {
                 "lat": self.latitude,
                 "lon": self.longitude,
             }
+            
+            # Use If-Modified-Since if we have cached forecast data
+            if forecast_cache_key in _GLOBAL_CACHE:
+                last_modified = _GLOBAL_CACHE[forecast_cache_key].get("last_modified")
+                if last_modified:
+                    headers["If-Modified-Since"] = last_modified
 
             async with aiohttp.ClientSession() as session:
                 async with session.get(
@@ -271,21 +352,64 @@ class WeatherFetcher:
                     params=params,
                     timeout=aiohttp.ClientTimeout(total=10)
                 ) as response:
+                    # Handle 304 Not Modified
+                    if response.status == 304:
+                        _LOGGER.debug("Forecast data not modified for %s, %s", self.latitude, self.longitude)
+                        if forecast_cache_key in _GLOBAL_CACHE:
+                            _GLOBAL_CACHE[forecast_cache_key]["time"] = datetime.now()
+                            return _GLOBAL_CACHE[forecast_cache_key]["data"]
+                    
                     if response.status == 203:
                         _LOGGER.warning(
                             "Met.no API version is deprecated (status 203). "
                             "This version will be terminated soon. Update integration."
                         )
                     
+                    # Handle errors
+                    if response.status == 403:
+                        _LOGGER.error("Met.no API returned 403 for forecast request")
+                        # Return cached data if available
+                        if forecast_cache_key in _GLOBAL_CACHE:
+                            return _GLOBAL_CACHE[forecast_cache_key]["data"]
+                        return {}
+                    
+                    if response.status == 429:
+                        _LOGGER.error("Met.no API rate limit (429) for forecast request")
+                        # Return cached data if available
+                        if forecast_cache_key in _GLOBAL_CACHE:
+                            return _GLOBAL_CACHE[forecast_cache_key]["data"]
+                        return {}
+                    
                     if response.status not in (200, 203):
-                        _LOGGER.error("Met.no API returned status %s", response.status)
+                        _LOGGER.error("Met.no API returned status %s for forecast", response.status)
+                        # Return cached data if available
+                        if forecast_cache_key in _GLOBAL_CACHE:
+                            return _GLOBAL_CACHE[forecast_cache_key]["data"]
                         return {}
 
                     data = await response.json()
-                    return self._parse_forecast(data, days)
+                    forecast_data = self._parse_forecast(data, days)
+                    
+                    # Store Last-Modified header
+                    last_modified = response.headers.get("Last-Modified")
+                    
+                    # Cache the forecast
+                    _GLOBAL_CACHE[forecast_cache_key] = {
+                        "data": forecast_data,
+                        "time": datetime.now(),
+                        "last_modified": last_modified,
+                        "cache_duration": self._cache_duration
+                    }
+                    
+                    _LOGGER.info("Successfully fetched forecast for %s, %s", self.latitude, self.longitude)
+                    
+                    return forecast_data
 
         except Exception as e:
             _LOGGER.error("Error fetching forecast from Met.no: %s", e)
+            # Return cached data if available
+            if forecast_cache_key in _GLOBAL_CACHE:
+                return _GLOBAL_CACHE[forecast_cache_key]["data"]
             return {}
 
     def _parse_forecast(self, data: Dict, days: int) -> Dict[str, Dict]:
@@ -324,13 +448,17 @@ class WeatherFetcher:
                 if date_str not in daily_data:
                     daily_data[date_str] = []
                 
+                # Use defaults for missing values
+                wind_speed_ms = instant.get("wind_speed", DEFAULT_WEATHER_VALUES["wind_speed"] / 3.6)
+                wind_gust_ms = instant.get("wind_speed_of_gust", wind_speed_ms)
+                
                 daily_data[date_str].append({
-                    "temperature": instant.get("air_temperature"),
-                    "wind_speed": instant.get("wind_speed", 0) * 3.6,
-                    "wind_gust": instant.get("wind_speed_of_gust", instant.get("wind_speed", 0)) * 3.6,
-                    "cloud_cover": instant.get("cloud_area_fraction", 50),
-                    "precipitation_probability": next_1h.get("probability_of_precipitation", 0),
-                    "pressure": instant.get("air_pressure_at_sea_level", 1013),
+                    "temperature": instant.get("air_temperature", DEFAULT_WEATHER_VALUES["temperature"]),
+                    "wind_speed": wind_speed_ms * 3.6,
+                    "wind_gust": wind_gust_ms * 3.6,
+                    "cloud_cover": instant.get("cloud_area_fraction", DEFAULT_WEATHER_VALUES["cloud_cover"]),
+                    "precipitation_probability": next_1h.get("probability_of_precipitation", DEFAULT_WEATHER_VALUES["precipitation_probability"]),
+                    "pressure": instant.get("air_pressure_at_sea_level", DEFAULT_WEATHER_VALUES["pressure"]),
                 })
             
             # Calculate daily averages
@@ -338,8 +466,12 @@ class WeatherFetcher:
                 if not entries:
                     continue
                 
+                # Filter out None temperatures for averaging
+                temps = [e["temperature"] for e in entries if e["temperature"] is not None]
+                avg_temp = sum(temps) / len(temps) if temps else DEFAULT_WEATHER_VALUES["temperature"]
+                
                 forecast[date_str] = {
-                    "temperature": sum(e["temperature"] for e in entries if e["temperature"]) / len([e for e in entries if e["temperature"]]),
+                    "temperature": avg_temp,
                     "wind_speed": sum(e["wind_speed"] for e in entries) / len(entries),
                     "wind_gust": max(e["wind_gust"] for e in entries),
                     "cloud_cover": sum(e["cloud_cover"] for e in entries) / len(entries),
@@ -359,18 +491,4 @@ class WeatherFetcher:
         Returns:
             Dictionary with neutral/default weather values
         """
-        _LOGGER.error(
-            "Using fallback weather data for %s, %s. "
-            "This means the Met.no API is unavailable or returning errors. "
-            "Fishing scores may be inaccurate.",
-            self.latitude,
-            self.longitude
-        )
-        return {
-            "temperature": 15.0,
-            "wind_speed": 10.0,
-            "wind_gust": 15.0,
-            "cloud_cover": 50,
-            "precipitation_probability": 0,
-            "pressure": 1013,
-        }
+        return DEFAULT_WEATHER_VALUES.copy()
