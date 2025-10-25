@@ -490,7 +490,7 @@ class OceanFishingScoreSensor(SensorEntity):
                 "temperature": weather_data_raw.get("temperature"),
                 "wind_speed": weather_data_raw.get("wind_speed"),
                 "wind_gust": weather_data_raw.get("wind_gust"),
-                "cloud_cover": weather_data_raw.get("cloud_covern"),
+                "cloud_cover": weather_data_raw.get("cloud_cover"),
                 "precipitation_probability": weather_data_raw.get("precipitation_probability"),
                 "pressure": weather_data_raw.get("pressure"),
             }

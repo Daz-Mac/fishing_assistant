@@ -250,7 +250,7 @@ async def get_fish_score_forecast(
                         "temperature": day_weather.get("temperature"),
                         "wind_speed": day_weather.get("wind_speed", 0),
                         "wind_gust": day_weather.get("wind_gust", day_weather.get("wind_speed", 0)),
-                        "cloud_cover": day_weather.get("cloud_coverage", 50),
+                        "cloud_cover": day_weather.get("cloud_cover", 50),
                         "precipitation_probability": day_weather.get("precipitation_probability", 0),
                         "pressure": day_weather.get("pressure", 1013),
                     },
@@ -337,7 +337,7 @@ def _calculate_species_score(
     total_adjustment += temp_adjustment
 
     # Cloud Cover Score (using species ideal_cloud)
-    cloud_cover = weather_data.get("cloud_coverage", 50)
+    cloud_cover = weather_data.get("cloud_cover", 50)
     ideal_cloud = profile.get("ideal_cloud", 50)
     cloud_diff = abs(cloud_cover - ideal_cloud)
     
