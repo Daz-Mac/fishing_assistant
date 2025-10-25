@@ -273,7 +273,7 @@ class FishScoreSensor(SensorEntity):
         
         try:
             # Get current weather data from Met.no API
-            weather_data_raw = await self._weather_fetcher.get_weather()
+            weather_data_raw = await self._weather_fetcher.get_weather_data()
             if not weather_data_raw:
                 _LOGGER.error("No weather data available for freshwater sensor")
                 return
@@ -481,7 +481,7 @@ class OceanFishingScoreSensor(SensorEntity):
     async def _get_weather_data(self):
         """Get weather data from Met.no API."""
         try:
-            weather_data_raw = await self._weather_fetcher.get_weather()
+            weather_data_raw = await self._weather_fetcher.get_weather_data()
             if not weather_data_raw:
                 return {}
             
@@ -876,7 +876,7 @@ class WindSpeedSensor(SensorEntity):
     async def async_update(self):
         """Update wind speed."""
         try:
-            weather_data = await self._weather_fetcher.get_weather()
+            weather_data = await self._weather_fetcher.get_weather_data()
             if weather_data:
                 self._state = weather_data.get("wind_speed")
         except Exception as e:
@@ -949,7 +949,7 @@ class WindGustSensor(SensorEntity):
     async def async_update(self):
         """Update wind gust speed."""
         try:
-            weather_data = await self._weather_fetcher.get_weather()
+            weather_data = await self._weather_fetcher.get_weather_data()
             if weather_data:
                 # Try wind_speed_of_gust first, fallback to wind_speed
                 self._state = weather_data.get(
