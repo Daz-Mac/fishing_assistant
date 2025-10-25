@@ -32,7 +32,7 @@ class WeatherFetcher:
         self.latitude = round(latitude, 4)  # Round to reduce cache keys
         self.longitude = round(longitude, 4)
         self._cache_key = f"{self.latitude}_{self.longitude}"
-        self._cache_duration = timedelta(minutes=30)  # Met.no updates every 30 min
+        self._cache_duration = timedelta(hours=2)  # Cache for 2 hours to respect rate limits
 
     async def get_weather_data(self) -> Dict:
         """Get current weather data for the location.
@@ -72,8 +72,11 @@ class WeatherFetcher:
                 ) as response:
                     if response.status == 429:
                         _LOGGER.warning(
-                            "Met.no API rate limit exceeded. Using fallback data."
+                            "Met.no API rate limit exceeded. Using cached/fallback data."
                         )
+                        # Return cached data if available, even if expired
+                        if self._cache_key in _GLOBAL_CACHE:
+                            return _GLOBAL_CACHE[self._cache_key]["data"]
                         return self._get_fallback_data()
                     
                     if response.status == 403:
@@ -100,6 +103,12 @@ class WeatherFetcher:
                         "data": weather_data,
                         "time": datetime.now()
                     }
+                    
+                    _LOGGER.info(
+                        "Successfully fetched fresh weather data for %s, %s (cached for 2 hours)",
+                        self.latitude,
+                        self.longitude
+                    )
                     
                     return weather_data
 
@@ -141,9 +150,7 @@ class WeatherFetcher:
             }
 
             _LOGGER.debug(
-                "Fetched weather for %s, %s: temp=%s°C, wind=%s km/h, clouds=%s%%",
-                self.latitude,
-                self.longitude,
+                "Parsed weather: temp=%s°C, wind=%s km/h, clouds=%s%%",
                 weather_data["temperature"],
                 weather_data["wind_speed"],
                 weather_data["cloud_cover"]
