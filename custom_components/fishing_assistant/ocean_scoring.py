@@ -1,9 +1,18 @@
 """Ocean fishing scoring algorithm with improved astronomical calculations."""
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, Optional, List, Tuple
+from typing import Dict, Optional, List, Tuple, Any
 from zoneinfo import ZoneInfo
 
+from .base_scorer import BaseScorer
+from .data_schema import (
+    WeatherConditions,
+    MarineConditions,
+    FishingScore,
+    HourlyForecast,
+    SpeciesScore
+)
+from .data_formatter import DataFormatter
 from .const import (
     CONF_SPECIES_ID,
     CONF_SPECIES_REGION,
@@ -21,6 +30,14 @@ from .const import (
     TIME_PERIODS_FULL_DAY,
     TIME_PERIODS_DAWN_DUSK,
     TIME_PERIOD_DEFINITIONS,
+    WEATHER_CONDITION_SCORES,
+    WIND_SPEED_THRESHOLDS,
+    PRESSURE_THRESHOLDS,
+    CLOUD_COVER_THRESHOLDS,
+    MOON_PHASE_SCORES,
+    SOLUNAR_PERIOD_BONUS,
+    WAVE_HEIGHT_THRESHOLDS,
+    TIDE_STATE_SCORES
 )
 from .species_loader import SpeciesLoader
 from .helpers.astro import calculate_astronomy_forecast
@@ -28,13 +45,19 @@ from .helpers.astro import calculate_astronomy_forecast
 _LOGGER = logging.getLogger(__name__)
 
 
-class OceanFishingScorer:
+class OceanFishingScorer(BaseScorer):
     """Calculate ocean fishing scores based on conditions and species."""
 
-    def __init__(self, hass, config: Dict):
+    def __init__(self, hass, config: Dict, species_profiles: dict[str, Any] = None):
         """Initialize the scorer."""
+        # Initialize BaseScorer with species profiles
+        if species_profiles is None:
+            species_profiles = {}
+        super().__init__(species_profiles)
+        
         self.hass = hass
         self.config = config
+        self.formatter = DataFormatter()
         self.species_loader = SpeciesLoader(hass)
         self.species_profile = None
         self._initialized = False
@@ -63,6 +86,8 @@ class OceanFishingScorer:
                     "Loaded species profile: %s",
                     self.species_profile.get("name", species_id)
                 )
+                # Update species_profiles dict for BaseScorer
+                self.species_profiles[species_id] = self.species_profile
 
             # Pre-load astronomical forecast
             await self._refresh_astro_cache()
@@ -111,13 +136,49 @@ class OceanFishingScorer:
 
     def calculate_score(
         self,
+        weather_data: dict[str, Any],
+        marine_data: dict[str, Any] | None = None,
+        species_name: str | None = None
+    ) -> FishingScore:
+        """Calculate ocean fishing score - BaseScorer interface."""
+        try:
+            # Use legacy calculation method
+            tide_data = marine_data.get("tide_data", {}) if marine_data else {}
+            astro_data = weather_data.get("astro_data", {})
+            target_time = datetime.now()
+            
+            # Call legacy method
+            result = self._legacy_calculate_score(
+                weather_data=weather_data,
+                tide_data=tide_data,
+                marine_data=marine_data,
+                astro_data=astro_data,
+                target_time=target_time
+            )
+            
+            # Convert to new format
+            return FishingScore(
+                score=result["score"],
+                conditions=result["conditions_summary"],
+                factors=result.get("safety_reasons", []),
+                species_scores=[],
+                hourly_forecast=[],
+                timestamp=datetime.now().isoformat()
+            )
+            
+        except Exception as e:
+            _LOGGER.error("Error calculating ocean score: %s", e)
+            return self._get_error_score()
+
+    def _legacy_calculate_score(
+        self,
         weather_data: Dict,
         tide_data: Dict,
         marine_data: Dict,
         astro_data: Dict,
         target_time: Optional[datetime] = None,
     ) -> Dict:
-        """Calculate the fishing score based on all conditions."""
+        """Calculate the fishing score based on all conditions - legacy method."""
         if not self._initialized or not self.species_profile:
             _LOGGER.error("Scorer not initialized, using fallback profile")
             self.species_profile = self._get_fallback_profile()
@@ -203,6 +264,17 @@ class OceanFishingScorer:
                 "species": self.species_profile.get("name", "Unknown"),
             },
         }
+
+    def _get_error_score(self) -> FishingScore:
+        """Return error score when calculation fails."""
+        return FishingScore(
+            score=0,
+            conditions="Unknown",
+            factors=["Error calculating score"],
+            species_scores=[],
+            hourly_forecast=[],
+            timestamp=datetime.now().isoformat()
+        )
 
     async def calculate_forecast(
         self,
@@ -360,7 +432,7 @@ class OceanFishingScorer:
                     }
 
                     # Calculate score for this time block
-                    result = self.calculate_score(
+                    result = self._legacy_calculate_score(
                         weather_data=weather_data,
                         tide_data=tide_data,
                         marine_data=marine_block_data,

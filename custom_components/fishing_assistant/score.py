@@ -1,9 +1,17 @@
 """Freshwater fishing scoring algorithm with period-based forecasting."""
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Any
 from zoneinfo import ZoneInfo
 
+from .base_scorer import BaseScorer
+from .data_schema import (
+    WeatherConditions,
+    FishingScore,
+    HourlyForecast,
+    SpeciesScore
+)
+from .data_formatter import DataFormatter
 from .const import (
     CONF_FISH,
     CONF_BODY_TYPE,
@@ -11,6 +19,12 @@ from .const import (
     TIME_PERIODS_FULL_DAY,
     TIME_PERIODS_DAWN_DUSK,
     TIME_PERIOD_DEFINITIONS,
+    WEATHER_CONDITION_SCORES,
+    WIND_SPEED_THRESHOLDS,
+    PRESSURE_THRESHOLDS,
+    CLOUD_COVER_THRESHOLDS,
+    MOON_PHASE_SCORES,
+    SOLUNAR_PERIOD_BONUS
 )
 from .species_loader import SpeciesLoader
 from .helpers.astro import calculate_astronomy_forecast
@@ -18,6 +32,158 @@ from .helpers.astro import calculate_astronomy_forecast
 _LOGGER = logging.getLogger(__name__)
 
 
+class FreshwaterFishingScorer(BaseScorer):
+    """Freshwater fishing scoring implementation."""
+
+    def __init__(self, species_profiles: dict[str, Any]):
+        """Initialize the freshwater scorer."""
+        super().__init__(species_profiles)
+        self.formatter = DataFormatter()
+
+    def calculate_score(
+        self,
+        weather_data: dict[str, Any],
+        species_name: str | None = None
+    ) -> FishingScore:
+        """Calculate freshwater fishing score - wrapper for new structure."""
+        try:
+            # Format weather data
+            conditions = self.formatter.format_weather_conditions(weather_data)
+            
+            # For now, use legacy calculation but return new format
+            # This maintains backward compatibility
+            astro_data = weather_data.get("astro_data", {})
+            target_time = datetime.now()
+            
+            if species_name:
+                fish_list = [species_name]
+            else:
+                fish_list = list(self.species_profiles.keys())[:1]  # Use first species as default
+            
+            # Use legacy calculation
+            result = self._legacy_get_fish_score(
+                fish_list=fish_list,
+                body_type="lake",  # Default
+                weather_data=weather_data,
+                astro_data=astro_data,
+                target_time=target_time
+            )
+            
+            # Convert to new format
+            return FishingScore(
+                score=result["score"],
+                conditions=result["conditions_summary"],
+                factors=self._extract_factors_from_components(result.get("component_scores", {})),
+                species_scores=[],
+                hourly_forecast=[],
+                timestamp=datetime.now().isoformat()
+            )
+            
+        except Exception as e:
+            _LOGGER.error("Error calculating freshwater score: %s", e)
+            return self._get_error_score()
+
+    def _legacy_get_fish_score(
+        self,
+        fish_list: List[str],
+        body_type: str,
+        weather_data: Dict,
+        astro_data: Dict,
+        target_time: datetime,
+    ) -> Dict:
+        """Legacy calculation method - maintains existing functionality."""
+        # Get species profiles
+        profiles = []
+        for fish_id in fish_list:
+            profile = self.species_profiles.get(fish_id)
+            if profile:
+                profiles.append(profile)
+            else:
+                _LOGGER.warning("Species profile not found: %s", fish_id)
+
+        if not profiles:
+            _LOGGER.error("No valid species profiles found")
+            return {
+                "score": 0.0,
+                "breakdown": {},
+                "component_scores": {},
+                "conditions_summary": "No species data available",
+            }
+
+        # Calculate scores for each species
+        species_scores = []
+        all_component_scores = []
+        for profile in profiles:
+            score_data = _calculate_species_score(
+                profile, body_type, weather_data, astro_data, target_time
+            )
+            species_scores.append(score_data["score"])
+            all_component_scores.append(score_data["components"])
+
+        # Average the scores
+        final_score = sum(species_scores) / len(species_scores)
+
+        # Average component scores across all species
+        component_scores = {}
+        if all_component_scores:
+            # Get all component keys
+            all_keys = set()
+            for comp in all_component_scores:
+                all_keys.update(comp.keys())
+            
+            # Average each component
+            for key in all_keys:
+                values = [comp.get(key, 0) for comp in all_component_scores]
+                component_scores[key] = round(sum(values) / len(values), 2)
+
+        # Generate breakdown
+        breakdown = {
+            "species_count": len(profiles),
+            "body_type": body_type,
+            "target_species": [p.get("name", p["id"]) for p in profiles],
+        }
+
+        # Scale to 0-10 (matching ocean scoring)
+        final_score_scaled = final_score * 10
+
+        # Generate summary (using scaled score)
+        if final_score_scaled >= 7:
+            summary = "Excellent conditions"
+        elif final_score_scaled >= 4:
+            summary = "Good conditions"
+        else:
+            summary = "Poor conditions"
+
+        return {
+            "score": round(final_score_scaled, 1),
+            "breakdown": breakdown,
+            "component_scores": component_scores,
+            "conditions_summary": summary,
+        }
+
+    def _extract_factors_from_components(self, component_scores: Dict) -> List[str]:
+        """Extract human-readable factors from component scores."""
+        factors = []
+        for component, score in component_scores.items():
+            if score >= 0.8:
+                factors.append(f"{component}: Excellent")
+            elif score >= 0.6:
+                factors.append(f"{component}: Good")
+        return factors
+
+    def _get_error_score(self) -> FishingScore:
+        """Return error score when calculation fails."""
+        return FishingScore(
+            score=0,
+            conditions="Unknown",
+            factors=["Error calculating score"],
+            species_scores=[],
+            hourly_forecast=[],
+            timestamp=datetime.now().isoformat()
+        )
+
+
+# Legacy function maintained for backward compatibility
 def get_fish_score(
     hass,
     fish_list: List[str],

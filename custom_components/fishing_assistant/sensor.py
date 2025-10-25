@@ -21,13 +21,13 @@ from .const import (
     CONF_TIME_PERIODS,
     PERIOD_FULL_DAY,
 )
-from .score import get_fish_score_forecast, get_fish_score
+from .score import FreshwaterScorer
+from .ocean_scoring import OceanScorer
 from .species_loader import SpeciesLoader
 from .tide_proxy import TideProxy
 from .marine_data import MarineDataFetcher
-from .ocean_scoring import OceanFishingScorer
-from .helpers.astro import calculate_astronomy_forecast
 from .weather_fetcher import WeatherFetcher
+from .data_formatter import DataFormatter
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ async def async_setup_entry(
 
 
 async def _setup_freshwater_sensors(hass, config_entry, async_add_entities):
-    """Set up freshwater fishing sensors (original)."""
+    """Set up freshwater fishing sensors."""
     data = config_entry.data
     sensors = []
 
@@ -101,7 +101,6 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
     weather_entity = data.get(CONF_WEATHER_ENTITY)
 
     # Create a location key based on coordinates for sensor naming consistency
-    # This ensures all sensors at the same location share the same base name
     location_key = f"{name.lower().replace(' ', '_')}"
 
     # Initialize data fetchers
@@ -187,7 +186,7 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
 
 
 # ============================================================================
-# FRESHWATER SENSORS (Original)
+# FRESHWATER SENSORS
 # ============================================================================
 
 class FishScoreSensor(SensorEntity):
@@ -204,6 +203,14 @@ class FishScoreSensor(SensorEntity):
         self._state = None
         self._species_loader = species_loader
         self._weather_fetcher = weather_fetcher
+        
+        # Initialize the scorer
+        self._scorer = FreshwaterScorer(
+            species_name=fish,
+            body_type=body_type,
+            species_loader=species_loader
+        )
+        
         self._attrs = {
             "fish": fish,
             "location": name,
@@ -261,7 +268,7 @@ class FishScoreSensor(SensorEntity):
         }
 
     async def async_update(self):
-        """Fetch the 7-day forecast and set today's score as state."""
+        """Fetch the current score and forecast."""
         now = datetime.now()
         update_hours = [0, 6, 12, 18]
         
@@ -278,53 +285,32 @@ class FishScoreSensor(SensorEntity):
                 _LOGGER.error("No weather data available for freshwater sensor")
                 return
             
-            # Normalize key names for compatibility with scoring system
-            weather_data = {
-                "temperature": weather_data_raw.get("temperature"),
-                "wind_speed": weather_data_raw.get("wind_speed"),
-                "cloud_coverage": weather_data_raw.get("cloud_cover"),
-                "pressure": weather_data_raw.get("pressure"),
-            }
+            # Format weather data using DataFormatter
+            weather_data = DataFormatter.format_weather_data(weather_data_raw)
             
             # Get current astro data
-            astro_forecast = await calculate_astronomy_forecast(
-                self.hass,
-                self._attrs["lat"],
-                self._attrs["lon"],
-                days=1
-            )
+            astro_data_raw = await self._get_astro_data()
+            astro_data = DataFormatter.format_astro_data(astro_data_raw)
             
-            today_str = now.date().strftime("%Y-%m-%d")
-            astro_data = astro_forecast.get(today_str, {})
-            
-            # Calculate current score with component breakdown
-            current_result = get_fish_score(
-                hass=self.hass,
-                fish_list=[self._attrs["fish"]],
-                body_type=self._attrs["body_type"],
+            # Calculate current score
+            result = self._scorer.calculate_score(
                 weather_data=weather_data,
                 astro_data=astro_data,
-                species_loader=self._species_loader,
                 target_time=now,
             )
             
-            # Set current score and component scores
-            self._state = current_result.get("score", 0)
-            breakdown = current_result.get("breakdown", {})
-            breakdown["component_scores"] = current_result.get("component_scores", {})
-            self._attrs["breakdown"] = breakdown
+            # Set current score and attributes
+            self._state = result["score"]
+            self._attrs["breakdown"] = result.get("breakdown", {})
+            self._attrs["component_scores"] = result.get("component_scores", {})
             
             # Get 7-day forecast
             weather_entity_id = self._attrs.get("weather_entity")
             if weather_entity_id:
-                forecast = await get_fish_score_forecast(
-                    hass=self.hass,
-                    fish_list=[self._attrs["fish"]],
-                    body_type=self._attrs["body_type"],
+                forecast = await self._scorer.calculate_forecast(
                     weather_entity_id=weather_entity_id,
                     latitude=self._attrs["lat"],
                     longitude=self._attrs["lon"],
-                    species_loader=self._species_loader,
                     period_type=self._attrs["period_type"],
                     days=7,
                 )
@@ -344,6 +330,38 @@ class FishScoreSensor(SensorEntity):
             _LOGGER.error("Error updating freshwater sensor %s: %s", self._name, e, exc_info=True)
             self._state = None
 
+    async def _get_astro_data(self):
+        """Get astronomical data from Home Assistant."""
+        sun_state = self.hass.states.get("sun.sun")
+        moon_state = self.hass.states.get("sensor.moon")
+
+        astro = {}
+
+        if sun_state:
+            sunrise_str = sun_state.attributes.get("next_rising")
+            sunset_str = sun_state.attributes.get("next_setting")
+            
+            if sunrise_str:
+                astro["sunrise"] = dt_util.parse_datetime(sunrise_str)
+            if sunset_str:
+                astro["sunset"] = dt_util.parse_datetime(sunset_str)
+
+        if moon_state:
+            phase_name = moon_state.state
+            phase_map = {
+                "new_moon": 0.0,
+                "waxing_crescent": 0.125,
+                "first_quarter": 0.25,
+                "waxing_gibbous": 0.375,
+                "full_moon": 0.5,
+                "waning_gibbous": 0.625,
+                "last_quarter": 0.75,
+                "waning_crescent": 0.875,
+            }
+            astro["moon_phase"] = phase_map.get(phase_name, 0.5)
+
+        return astro
+
 
 # ============================================================================
 # OCEAN MODE SENSORS
@@ -361,12 +379,21 @@ class OceanFishingScoreSensor(SensorEntity):
         self._tide_proxy = tide_proxy
         self._marine_fetcher = marine_fetcher
         self._weather_fetcher = weather_fetcher
-        self._scorer = OceanFishingScorer(hass, config_entry.data)
-
+        
         data = config_entry.data
         name = data["name"]
         lat = data["latitude"]
         lon = data["longitude"]
+
+        # Initialize the ocean scorer
+        self._scorer = OceanScorer(
+            hass=hass,
+            latitude=lat,
+            longitude=lon,
+            habitat_preset=data.get("habitat_preset"),
+            species_focus=data.get("species_focus"),
+            species_loader=SpeciesLoader(hass)
+        )
 
         self._device_identifier = f"{name}_{lat}_{lon}_ocean"
         self._name = f"{name.lower().replace(' ', '_')}_ocean_fishing_score"
@@ -381,7 +408,7 @@ class OceanFishingScoreSensor(SensorEntity):
             "longitude": lon,
             "mode": "ocean",
             "habitat": data.get("habitat_preset"),
-            "species_focus": "Unknown",
+            "species_focus": data.get("species_focus", "Unknown"),
         }
 
     @property
@@ -438,11 +465,17 @@ class OceanFishingScoreSensor(SensorEntity):
             return
 
         try:
-            # Gather all data
-            weather_data = await self._get_weather_data()
-            tide_data = await self._tide_proxy.get_tide_data() if self._tide_proxy else {}
-            marine_data = await self._marine_fetcher.get_marine_data() if self._marine_fetcher else {}
-            astro_data = await self._get_astro_data()
+            # Gather all raw data
+            weather_data_raw = await self._weather_fetcher.get_weather_data()
+            tide_data_raw = await self._tide_proxy.get_tide_data() if self._tide_proxy else {}
+            marine_data_raw = await self._marine_fetcher.get_marine_data() if self._marine_fetcher else {}
+            astro_data_raw = await self._get_astro_data()
+
+            # Format data using DataFormatter
+            weather_data = DataFormatter.format_weather_data(weather_data_raw) if weather_data_raw else {}
+            tide_data = DataFormatter.format_tide_data(tide_data_raw) if tide_data_raw else {}
+            marine_data = DataFormatter.format_marine_data(marine_data_raw) if marine_data_raw else {}
+            astro_data = DataFormatter.format_astro_data(astro_data_raw)
 
             # Calculate current score
             result = self._scorer.calculate_score(
@@ -459,6 +492,7 @@ class OceanFishingScoreSensor(SensorEntity):
                 "best_window": result.get("best_window"),
                 "conditions_summary": result.get("conditions_summary"),
                 "breakdown": result.get("breakdown"),
+                "component_scores": result.get("component_scores"),
                 "last_updated": now.isoformat(),
             })
 
@@ -467,7 +501,8 @@ class OceanFishingScoreSensor(SensorEntity):
             if weather_entity_id:
                 forecast = await self._scorer.calculate_forecast(
                     weather_entity_id=weather_entity_id,
-                    marine_data=marine_data,
+                    latitude=self._attrs["latitude"],
+                    longitude=self._attrs["longitude"],
                     days=5,
                 )
                 self._attrs["forecast"] = forecast
@@ -478,26 +513,6 @@ class OceanFishingScoreSensor(SensorEntity):
             _LOGGER.error(f"Error updating ocean fishing score: {e}", exc_info=True)
             self._state = None
 
-    async def _get_weather_data(self):
-        """Get weather data from Met.no API."""
-        try:
-            weather_data_raw = await self._weather_fetcher.get_weather_data()
-            if not weather_data_raw:
-                return {}
-            
-            # Normalize key names for compatibility with scoring system
-            return {
-                "temperature": weather_data_raw.get("temperature"),
-                "wind_speed": weather_data_raw.get("wind_speed"),
-                "wind_gust": weather_data_raw.get("wind_gust"),
-                "cloud_cover": weather_data_raw.get("cloud_cover"),
-                "precipitation_probability": weather_data_raw.get("precipitation_probability"),
-                "pressure": weather_data_raw.get("pressure"),
-            }
-        except Exception as e:
-            _LOGGER.error(f"Error fetching weather data: {e}")
-            return {}
-
     async def _get_astro_data(self):
         """Get astronomical data from Home Assistant."""
         sun_state = self.hass.states.get("sun.sun")
@@ -506,7 +521,6 @@ class OceanFishingScoreSensor(SensorEntity):
         astro = {}
 
         if sun_state:
-            # Parse string timestamps to datetime objects
             sunrise_str = sun_state.attributes.get("next_rising")
             sunset_str = sun_state.attributes.get("next_setting")
             
@@ -533,7 +547,6 @@ class OceanFishingScoreSensor(SensorEntity):
 
     async def async_added_to_hass(self):
         """When entity is added to hass."""
-        # Initialize the scorer asynchronously
         await self._scorer.async_initialize()
         
         # Update species_focus with the actual loaded species name
@@ -951,7 +964,6 @@ class WindGustSensor(SensorEntity):
         try:
             weather_data = await self._weather_fetcher.get_weather_data()
             if weather_data:
-                # Try wind_gust first, fallback to wind_speed
                 self._state = weather_data.get(
                     "wind_gust",
                     weather_data.get("wind_speed")
