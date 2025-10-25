@@ -280,10 +280,10 @@ class FishScoreSensor(SensorEntity):
             
             # Normalize key names for compatibility with scoring system
             weather_data = {
-                "temperature": weather_data_raw.get("air_temperature"),
-                "wind_speed": weather_data_raw.get("wind_speed", 0),
-                "cloud_coverage": weather_data_raw.get("cloud_area_fraction", 50),
-                "pressure": weather_data_raw.get("air_pressure_at_sea_level", 1013),
+                "temperature": weather_data_raw.get("temperature"),
+                "wind_speed": weather_data_raw.get("wind_speed"),
+                "cloud_coverage": weather_data_raw.get("cloud_cover"),
+                "pressure": weather_data_raw.get("pressure"),
             }
             
             # Get current astro data
@@ -487,12 +487,12 @@ class OceanFishingScoreSensor(SensorEntity):
             
             # Normalize key names for compatibility with scoring system
             return {
-                "temperature": weather_data_raw.get("air_temperature"),
-                "wind_speed": weather_data_raw.get("wind_speed", 0),
-                "wind_gust": weather_data_raw.get("wind_speed_of_gust", weather_data_raw.get("wind_speed", 0)),
-                "cloud_cover": weather_data_raw.get("cloud_area_fraction", 50),
-                "precipitation_probability": weather_data_raw.get("probability_of_precipitation", 0),
-                "pressure": weather_data_raw.get("air_pressure_at_sea_level", 1013),
+                "temperature": weather_data_raw.get("temperature"),
+                "wind_speed": weather_data_raw.get("wind_speed"),
+                "wind_gust": weather_data_raw.get("wind_gust"),
+                "cloud_cover": weather_data_raw.get("cloud_covern"),
+                "precipitation_probability": weather_data_raw.get("precipitation_probability"),
+                "pressure": weather_data_raw.get("pressure"),
             }
         except Exception as e:
             _LOGGER.error(f"Error fetching weather data: {e}")
@@ -951,9 +951,9 @@ class WindGustSensor(SensorEntity):
         try:
             weather_data = await self._weather_fetcher.get_weather_data()
             if weather_data:
-                # Try wind_speed_of_gust first, fallback to wind_speed
+                # Try wind_gust first, fallback to wind_speed
                 self._state = weather_data.get(
-                    "wind_speed_of_gust",
+                    "wind_gust",
                     weather_data.get("wind_speed")
                 )
         except Exception as e:
