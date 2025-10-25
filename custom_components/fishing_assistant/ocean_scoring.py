@@ -213,7 +213,7 @@ class OceanFishingScorer:
         """Calculate fishing score forecast for the next N days.
         
         Uses a hybrid approach:
-        - For today: Only shows remaining periods (skips past/current periods)
+        - For today: Only shows remaining periods (skips past periods)
         - For future days: Shows all 4 periods (morning, afternoon, evening, night)
         """
         forecast = {}
@@ -295,32 +295,34 @@ class OceanFishingScorer:
 
                 # Calculate score for each time block
                 for block in time_blocks:
-                    # Skip past/current periods for today (hybrid approach)
+                    # Skip past periods for today (hybrid approach)
                     if is_today and block["name"] != "night":
                         # For periods that don't cross midnight (morning, afternoon, evening)
                         # Night period (0-6) is always shown for today as it represents tonight
-                        block_start_time = datetime.combine(
+                        
+                        # Calculate the end time of the period
+                        block_end_time = datetime.combine(
                             target_date,
                             datetime.min.time().replace(
-                                hour=block["start_hour"],
-                                minute=block.get("start_minute", 0)
+                                hour=block["end_hour"],
+                                minute=block.get("end_minute", 0)
                             )
                         )
                         
                         # Make timezone-aware if needed for comparison
-                        if now.tzinfo is not None and block_start_time.tzinfo is None:
+                        if now.tzinfo is not None and block_end_time.tzinfo is None:
                             try:
                                 tz_str = self.hass.config.time_zone
-                                block_start_time = block_start_time.replace(tzinfo=ZoneInfo(tz_str))
+                                block_end_time = block_end_time.replace(tzinfo=ZoneInfo(tz_str))
                             except Exception:
                                 pass
                         
-                        # Skip if this period has already started (we're in it or past it)
-                        if now >= block_start_time:
+                        # Skip if this period has completely ended
+                        if now >= block_end_time:
                             _LOGGER.debug(
-                                "Skipping current/past period %s (starts at %s, current time is %s)",
+                                "Skipping past period %s (ends at %s, current time is %s)",
                                 block["name"], 
-                                block_start_time.strftime("%H:%M"), 
+                                block_end_time.strftime("%H:%M"), 
                                 now.strftime("%H:%M")
                             )
                             continue
