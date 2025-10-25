@@ -157,25 +157,23 @@ def format_component_scores(raw_scores: Dict[str, float]) -> ComponentScores:
 
 def format_scoring_result(
     score: float,
-    component_scores: Dict[str, float],
-    breakdown: Optional[Dict[str, Any]] = None,
-    conditions_summary: str = "",
+    conditions_summary: str,
+    component_scores: ComponentScores,
 ) -> ScoringResult:
     """Convert raw scoring results to standardized ScoringResult format.
     
     Args:
         score: Overall fishing score (0-10)
-        component_scores: Dictionary of component scores
-        breakdown: Additional breakdown information
         conditions_summary: Human-readable summary
+        component_scores: ComponentScores dictionary
         
     Returns:
         Standardized ScoringResult dictionary
     """
     return ScoringResult(
         score=round(score, 1),
-        breakdown=breakdown or {},
-        component_scores=format_component_scores(component_scores),
+        breakdown={},
+        component_scores=component_scores,
         conditions_summary=conditions_summary,
     )
 
