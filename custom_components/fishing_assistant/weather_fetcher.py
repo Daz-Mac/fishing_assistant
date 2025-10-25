@@ -9,8 +9,12 @@ _LOGGER = logging.getLogger(__name__)
 # Met.no API endpoint (same as Home Assistant uses)
 METNO_API_URL = "https://api.met.no/weatherapi/locationforecast/2.0/compact"
 
-# User agent required by Met.no
-USER_AGENT = "HomeAssistant-FishingAssistant/1.0"
+# User agent required by Met.no - MUST include contact info per their ToS
+# Update this with your actual contact information
+USER_AGENT = "HomeAssistant-FishingAssistant/1.0 +https://github.com/Daz-Mac/fishing_assistant"
+
+# Global cache to share weather data across all sensors at the same location
+_GLOBAL_CACHE = {}
 
 
 class WeatherFetcher:
@@ -25,10 +29,9 @@ class WeatherFetcher:
             longitude: Location longitude
         """
         self.hass = hass
-        self.latitude = latitude
-        self.longitude = longitude
-        self._cache = None
-        self._cache_time = None
+        self.latitude = round(latitude, 4)  # Round to reduce cache keys
+        self.longitude = round(longitude, 4)
+        self._cache_key = f"{self.latitude}_{self.longitude}"
         self._cache_duration = timedelta(minutes=30)  # Met.no updates every 30 min
 
     async def get_weather_data(self) -> Dict:
@@ -43,10 +46,12 @@ class WeatherFetcher:
             - precipitation_probability: Precipitation probability percentage
             - pressure: Atmospheric pressure in hPa
         """
-        # Check cache
-        if self._cache and self._cache_time:
-            if datetime.now() - self._cache_time < self._cache_duration:
-                return self._cache
+        # Check global cache first
+        if self._cache_key in _GLOBAL_CACHE:
+            cache_entry = _GLOBAL_CACHE[self._cache_key]
+            if datetime.now() - cache_entry["time"] < self._cache_duration:
+                _LOGGER.debug("Using cached weather data for %s, %s", self.latitude, self.longitude)
+                return cache_entry["data"]
 
         try:
             headers = {
@@ -65,6 +70,19 @@ class WeatherFetcher:
                     params=params,
                     timeout=aiohttp.ClientTimeout(total=10)
                 ) as response:
+                    if response.status == 429:
+                        _LOGGER.warning(
+                            "Met.no API rate limit exceeded. Using fallback data."
+                        )
+                        return self._get_fallback_data()
+                    
+                    if response.status == 403:
+                        _LOGGER.error(
+                            "Met.no API returned 403 Forbidden. Check User-Agent header includes contact info. "
+                            "See https://api.met.no/doc/TermsOfService"
+                        )
+                        return self._get_fallback_data()
+                    
                     if response.status != 200:
                         _LOGGER.error(
                             "Met.no API returned status %s for location %s, %s",
@@ -77,9 +95,11 @@ class WeatherFetcher:
                     data = await response.json()
                     weather_data = self._parse_metno_data(data)
                     
-                    # Cache the result
-                    self._cache = weather_data
-                    self._cache_time = datetime.now()
+                    # Cache the result globally
+                    _GLOBAL_CACHE[self._cache_key] = {
+                        "data": weather_data,
+                        "time": datetime.now()
+                    }
                     
                     return weather_data
 
