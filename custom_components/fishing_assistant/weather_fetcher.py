@@ -10,7 +10,7 @@ _LOGGER = logging.getLogger(__name__)
 METNO_API_URL = "https://api.met.no/weatherapi/locationforecast/2.0/compact"
 
 # User agent required by Met.no - MUST include contact info per their ToS
-# Update this with your actual contact information
+# Format: "AppName/Version +URL" or "AppName/Version contact@email.com"
 USER_AGENT = "HomeAssistant-FishingAssistant/1.0 github.com/Daz-Mac/fishing_assistant"
 
 # Global cache to share weather data across all sensors at the same location
@@ -29,10 +29,12 @@ class WeatherFetcher:
             longitude: Location longitude
         """
         self.hass = hass
-        self.latitude = round(latitude, 4)  # Round to reduce cache keys
+        # Round to max 4 decimals per Met.no ToS (5+ decimals returns 403)
+        self.latitude = round(latitude, 4)
         self.longitude = round(longitude, 4)
         self._cache_key = f"{self.latitude}_{self.longitude}"
-        self._cache_duration = timedelta(hours=2)  # Cache for 2 hours to respect rate limits
+        # Cache for 2 hours to respect rate limits and avoid unnecessary traffic
+        self._cache_duration = timedelta(hours=2)
 
     async def get_weather_data(self) -> Dict:
         """Get current weather data for the location.
@@ -46,7 +48,7 @@ class WeatherFetcher:
             - precipitation_probability: Precipitation probability percentage
             - pressure: Atmospheric pressure in hPa
         """
-        # Check global cache first
+        # Check global cache first to avoid unnecessary traffic
         if self._cache_key in _GLOBAL_CACHE:
             cache_entry = _GLOBAL_CACHE[self._cache_key]
             if datetime.now() - cache_entry["time"] < self._cache_duration:
@@ -56,12 +58,21 @@ class WeatherFetcher:
         try:
             headers = {
                 "User-Agent": USER_AGENT,
+                "Accept-Encoding": "gzip, deflate",  # Required per RFC 2616
             }
             
             params = {
                 "lat": self.latitude,
                 "lon": self.longitude,
             }
+
+            # Check if we have cached data with Last-Modified header
+            if_modified_since = None
+            if self._cache_key in _GLOBAL_CACHE:
+                last_modified = _GLOBAL_CACHE[self._cache_key].get("last_modified")
+                if last_modified:
+                    if_modified_since = last_modified
+                    headers["If-Modified-Since"] = last_modified
 
             async with aiohttp.ClientSession() as session:
                 async with session.get(
@@ -70,23 +81,47 @@ class WeatherFetcher:
                     params=params,
                     timeout=aiohttp.ClientTimeout(total=10)
                 ) as response:
+                    # Handle 304 Not Modified - data hasn't changed
+                    if response.status == 304:
+                        _LOGGER.debug("Weather data not modified for %s, %s", self.latitude, self.longitude)
+                        # Update cache time but keep existing data
+                        if self._cache_key in _GLOBAL_CACHE:
+                            _GLOBAL_CACHE[self._cache_key]["time"] = datetime.now()
+                            return _GLOBAL_CACHE[self._cache_key]["data"]
+                    
+                    # Handle 429 Rate Limit
                     if response.status == 429:
-                        _LOGGER.warning(
-                            "Met.no API rate limit exceeded. Using cached/fallback data."
+                        _LOGGER.error(
+                            "Met.no API rate limit (429) exceeded for %s, %s. "
+                            "Using cached/fallback data. Check your request frequency.",
+                            self.latitude,
+                            self.longitude
                         )
                         # Return cached data if available, even if expired
                         if self._cache_key in _GLOBAL_CACHE:
                             return _GLOBAL_CACHE[self._cache_key]["data"]
                         return self._get_fallback_data()
                     
+                    # Handle 403 Forbidden
                     if response.status == 403:
                         _LOGGER.error(
-                            "Met.no API returned 403 Forbidden. Check User-Agent header includes contact info. "
-                            "See https://api.met.no/doc/TermsOfService"
+                            "Met.no API returned 403 Forbidden for %s, %s. "
+                            "Possible causes: Invalid User-Agent (must include contact info), "
+                            "coordinates with >4 decimals, or ToS violation. "
+                            "See https://api.met.no/doc/TermsOfService",
+                            self.latitude,
+                            self.longitude
                         )
                         return self._get_fallback_data()
                     
-                    if response.status != 200:
+                    # Handle 203 Non-Authoritative (deprecated API version warning)
+                    if response.status == 203:
+                        _LOGGER.warning(
+                            "Met.no API version is deprecated (status 203). "
+                            "This version will be terminated soon. Update integration."
+                        )
+                    
+                    if response.status not in (200, 203):
                         _LOGGER.error(
                             "Met.no API returned status %s for location %s, %s",
                             response.status,
@@ -98,10 +133,14 @@ class WeatherFetcher:
                     data = await response.json()
                     weather_data = self._parse_metno_data(data)
                     
+                    # Store Last-Modified header for future If-Modified-Since requests
+                    last_modified = response.headers.get("Last-Modified")
+                    
                     # Cache the result globally
                     _GLOBAL_CACHE[self._cache_key] = {
                         "data": weather_data,
-                        "time": datetime.now()
+                        "time": datetime.now(),
+                        "last_modified": last_modified
                     }
                     
                     _LOGGER.info(
@@ -174,6 +213,7 @@ class WeatherFetcher:
         try:
             headers = {
                 "User-Agent": USER_AGENT,
+                "Accept-Encoding": "gzip, deflate",  # Required per RFC 2616
             }
             
             params = {
@@ -188,7 +228,13 @@ class WeatherFetcher:
                     params=params,
                     timeout=aiohttp.ClientTimeout(total=10)
                 ) as response:
-                    if response.status != 200:
+                    if response.status == 203:
+                        _LOGGER.warning(
+                            "Met.no API version is deprecated (status 203). "
+                            "This version will be terminated soon. Update integration."
+                        )
+                    
+                    if response.status not in (200, 203):
                         _LOGGER.error("Met.no API returned status %s", response.status)
                         return {}
 
@@ -270,6 +316,13 @@ class WeatherFetcher:
         Returns:
             Dictionary with neutral/default weather values
         """
+        _LOGGER.error(
+            "Using fallback weather data for %s, %s. "
+            "This means the Met.no API is unavailable or returning errors. "
+            "Fishing scores may be inaccurate.",
+            self.latitude,
+            self.longitude
+        )
         return {
             "temperature": 15.0,
             "wind_speed": 10.0,
