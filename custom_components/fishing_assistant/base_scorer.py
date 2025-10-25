@@ -69,7 +69,7 @@ class BaseScorer(ABC):
         tide: Optional[TideData] = None,
         marine: Optional[MarineData] = None,
         current_time: Optional[Any] = None,
-    ) -> Dict[str, float]:
+    ) -> ComponentScores:
         """Calculate component scores.
         
         Args:
@@ -80,7 +80,7 @@ class BaseScorer(ABC):
             current_time: Optional datetime object for time-based scoring
             
         Returns:
-            Dictionary of component scores
+            ComponentScores dictionary with individual component scores
         """
         pass
     
