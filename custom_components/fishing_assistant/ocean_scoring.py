@@ -455,44 +455,127 @@ class OceanFishingScorer(BaseScorer):
     def _find_tide_for_time(
         self, tide_forecast: List[Dict[str, Any]], target_time: datetime
     ) -> Optional[Dict[str, Any]]:
-        """Find tide data closest to target time."""
+        """Find tide data closest to target time.
+
+        This function is tolerant: tide_forecast items can be dicts with a 'datetime'
+        key or simple ISO datetime strings.
+        """
         if not tide_forecast:
             return None
+
+        # helper to coerce possible string target_time
+        def _coerce_dt(v):
+            if isinstance(v, datetime):
+                return v
+            if isinstance(v, str):
+                try:
+                    return datetime.fromisoformat(v)
+                except Exception:
+                    try:
+                        return datetime.fromisoformat(v.replace("Z", "+00:00"))
+                    except Exception:
+                        return None
+            return None
+
+        tgt = _coerce_dt(target_time) or target_time
+        if isinstance(tgt, datetime) and tgt.tzinfo is not None:
+            tgt = tgt.replace(tzinfo=None)
 
         closest_tide = None
         min_diff = None
 
-        for tide_data in tide_forecast:
-            tide_time = tide_data.get("datetime")
-            if not tide_time:
+        for item in tide_forecast:
+            # Accept dict-like or raw timestamp strings
+            tide_time = None
+            tide_item = None
+
+            if isinstance(item, dict):
+                tide_item = item
+                tide_time = item.get("datetime") or item.get("timestamp") or item.get("time")
+            else:
+                # item might be an ISO string or timestamp
+                tide_time = item
+
+            tide_dt = _coerce_dt(tide_time)
+            if tide_dt is None:
                 continue
 
-            time_diff = abs((tide_time - target_time).total_seconds())
+            if tide_dt.tzinfo is not None:
+                tide_dt = tide_dt.replace(tzinfo=None)
+
+            try:
+                time_diff = abs((tide_dt - tgt).total_seconds())
+            except Exception:
+                continue
+
             if min_diff is None or time_diff < min_diff:
                 min_diff = time_diff
-                closest_tide = tide_data
+                # prefer returning the original dict if present
+                closest_tide = tide_item if tide_item is not None else {"datetime": tide_dt}
 
         return closest_tide
 
     def _find_marine_for_time(
         self, marine_forecast: List[Dict[str, Any]], target_time: datetime
     ) -> Optional[Dict[str, Any]]:
-        """Find marine data closest to target time."""
+        """Find marine data closest to target time.
+
+        Tolerant of items that are dicts with 'datetime'/'timestamp' keys or bare ISO strings.
+        Returns a dict representing the matched marine entry.
+        """
         if not marine_forecast:
             return None
+
+        # helper to coerce possible string target_time
+        def _coerce_dt(v):
+            if isinstance(v, datetime):
+                return v
+            if isinstance(v, str):
+                try:
+                    return datetime.fromisoformat(v)
+                except Exception:
+                    try:
+                        return datetime.fromisoformat(v.replace("Z", "+00:00"))
+                    except Exception:
+                        return None
+            return None
+
+        tgt = _coerce_dt(target_time) or target_time
+        if isinstance(tgt, datetime) and tgt.tzinfo is not None:
+            tgt = tgt.replace(tzinfo=None)
 
         closest_marine = None
         min_diff = None
 
-        for marine_data in marine_forecast:
-            marine_time = marine_data.get("datetime")
-            if not marine_time:
+        for item in marine_forecast:
+            marine_time = None
+            marine_item = None
+
+            if isinstance(item, dict):
+                marine_item = item
+                # common keys that may hold timestamp
+                marine_time = item.get("datetime") or item.get("timestamp") or item.get("time")
+            else:
+                # item may just be an ISO date/time string
+                marine_time = item
+
+            marine_dt = _coerce_dt(marine_time)
+            if marine_dt is None:
+                # Nothing parseable for this item
                 continue
 
-            time_diff = abs((marine_time - target_time).total_seconds())
+            if marine_dt.tzinfo is not None:
+                marine_dt = marine_dt.replace(tzinfo=None)
+
+            try:
+                time_diff = abs((marine_dt - tgt).total_seconds())
+            except Exception:
+                continue
+
             if min_diff is None or time_diff < min_diff:
                 min_diff = time_diff
-                closest_marine = marine_data
+                # prefer returning the original dict if we have it; otherwise wrap minimal info
+                closest_marine = marine_item if marine_item is not None else {"datetime": marine_dt}
 
         return closest_marine
 
