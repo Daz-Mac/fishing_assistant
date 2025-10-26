@@ -19,7 +19,6 @@ class FreshwaterFishingScorer(BaseScorer):
         longitude: float,
         species: List[str],
         species_profiles: dict[str, Any],
-        species_name: str = None,
         body_type: str = None,
         species_loader: SpeciesLoader = None,
     ):
@@ -30,13 +29,12 @@ class FreshwaterFishingScorer(BaseScorer):
             longitude: Location longitude
             species: List of species IDs
             species_profiles: Dictionary of species profiles
-            species_name: Name of the target species (legacy)
             body_type: Type of water body (lake, river, etc.)
             species_loader: Species loader instance
         """
         super().__init__(latitude, longitude, species, species_profiles)
         
-        self.species_name = species_name or (species[0] if species else "general")
+        self.species_name = species[0] if species else "general"
         self.body_type = body_type or "lake"
         self.species_loader = species_loader
         
@@ -72,7 +70,7 @@ class FreshwaterFishingScorer(BaseScorer):
             current_time: Optional datetime object for time-based scoring
             
         Returns:
-            Dictionary of component scores
+            Dictionary of component scores with capitalized keys matching ComponentScores schema
         """
         if current_time is None:
             current_time = datetime.now()
@@ -82,32 +80,32 @@ class FreshwaterFishingScorer(BaseScorer):
         # Temperature Score
         temp = weather_data.get("temperature")
         if temp is not None:
-            components["temperature"] = self._score_temperature(temp)
+            components["Temperature"] = self._score_temperature(temp)
         else:
-            components["temperature"] = 5.0
+            components["Temperature"] = 5.0
         
         # Wind Score
         wind_speed = weather_data.get("wind_speed", 0)
         wind_gust = weather_data.get("wind_gust", wind_speed)
-        components["wind"] = self._score_wind(wind_speed, wind_gust)
+        components["Wind"] = self._score_wind(wind_speed, wind_gust)
         
         # Pressure Score
         pressure = weather_data.get("pressure", 1013)
-        components["pressure"] = self._score_pressure(pressure)
+        components["Pressure"] = self._score_pressure(pressure)
         
         # Cloud Cover Score
         cloud_cover = weather_data.get("cloud_cover", 50)
-        components["cloud_cover"] = self._score_cloud_cover(cloud_cover)
+        components["Clouds"] = self._score_cloud_cover(cloud_cover)
         
         # Time of Day Score
-        components["time_of_day"] = self._score_time_of_day(current_time, astro_data)
+        components["Time"] = self._score_time_of_day(current_time, astro_data)
         
         # Season Score
-        components["season"] = self._score_season(current_time)
+        components["Season"] = self._score_season(current_time)
         
         # Moon Phase Score
         moon_phase = astro_data.get("moon_phase")
-        components["moon"] = self._score_moon(moon_phase)
+        components["Moon"] = self._score_moon(moon_phase)
         
         return components
 
@@ -115,16 +113,16 @@ class FreshwaterFishingScorer(BaseScorer):
         """Get factor weights for scoring.
         
         Returns:
-            Dictionary of factor weights
+            Dictionary of factor weights with capitalized keys
         """
         return {
-            "temperature": 0.25,
-            "wind": 0.15,
-            "pressure": 0.15,
-            "cloud_cover": 0.15,
-            "time_of_day": 0.15,
-            "season": 0.10,
-            "moon": 0.05,
+            "Temperature": 0.25,
+            "Wind": 0.15,
+            "Pressure": 0.15,
+            "Clouds": 0.15,
+            "Time": 0.15,
+            "Season": 0.10,
+            "Moon": 0.05,
         }
 
     async def calculate_forecast(

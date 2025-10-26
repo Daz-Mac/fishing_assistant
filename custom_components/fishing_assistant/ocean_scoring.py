@@ -136,7 +136,7 @@ class OceanFishingScorer(BaseScorer):
             current_time: Optional datetime object for time-based scoring
             
         Returns:
-            Dictionary of component scores
+            Dictionary of component scores with capitalized keys matching ComponentScores schema
         """
         if current_time is None:
             current_time = datetime.now()
@@ -146,47 +146,44 @@ class OceanFishingScorer(BaseScorer):
         # Temperature Score
         temp = weather_data.get("temperature")
         if temp is not None:
-            components["temperature"] = self._score_temperature(temp)
+            components["Temperature"] = self._score_temperature(temp)
         else:
-            components["temperature"] = 5.0
+            components["Temperature"] = 5.0
         
         # Wind Score
         wind_speed = weather_data.get("wind_speed", 0)
         wind_gust = weather_data.get("wind_gust", wind_speed)
-        components["wind"] = self._score_wind(wind_speed, wind_gust)
+        components["Wind"] = self._score_wind(wind_speed, wind_gust)
         
         # Pressure Score
         pressure = weather_data.get("pressure", 1013)
-        components["pressure"] = self._score_pressure(pressure)
+        components["Pressure"] = self._score_pressure(pressure)
         
         # Tide Score
         if tide_data:
             tide_state = tide_data.get("state", "unknown")
             tide_strength = tide_data.get("strength", 50) / 100.0
-            components["tide"] = self._score_tide(tide_state, tide_strength)
+            components["Tide"] = self._score_tide(tide_state, tide_strength)
         else:
-            components["tide"] = 5.0
+            components["Tide"] = 5.0
         
         # Wave Score
         if marine_data:
-            wave_height = marine_data.get("current", {}).get("wave_height", 1.0)
-            components["waves"] = self._score_waves(wave_height)
+            current_marine = marine_data.get("current", {}) if isinstance(marine_data, dict) else {}
+            wave_height = current_marine.get("wave_height", 1.0)
+            components["Waves"] = self._score_waves(wave_height)
         else:
-            components["waves"] = 5.0
-        
-        # Cloud Cover Score
-        cloud_cover = weather_data.get("cloud_cover", 50)
-        components["cloud_cover"] = self._score_cloud_cover(cloud_cover)
+            components["Waves"] = 5.0
         
         # Time of Day Score
-        components["time_of_day"] = self._score_time_of_day(current_time, astro_data)
+        components["Time"] = self._score_time_of_day(current_time, astro_data)
         
         # Season Score
-        components["season"] = self._score_season(current_time)
+        components["Season"] = self._score_season(current_time)
         
         # Moon Phase Score
         moon_phase = astro_data.get("moon_phase")
-        components["moon"] = self._score_moon(moon_phase)
+        components["Moon"] = self._score_moon(moon_phase)
         
         return components
 
@@ -194,18 +191,17 @@ class OceanFishingScorer(BaseScorer):
         """Get factor weights for scoring.
         
         Returns:
-            Dictionary of factor weights
+            Dictionary of factor weights with capitalized keys
         """
         return {
-            "tide": 0.25,
-            "wind": 0.15,
-            "waves": 0.15,
-            "time_of_day": 0.15,
-            "pressure": 0.10,
-            "season": 0.10,
-            "moon": 0.05,
-            "temperature": 0.03,
-            "cloud_cover": 0.02,
+            "Tide": 0.25,
+            "Wind": 0.15,
+            "Waves": 0.15,
+            "Time": 0.15,
+            "Pressure": 0.10,
+            "Season": 0.10,
+            "Moon": 0.05,
+            "Temperature": 0.03,
         }
 
     async def calculate_forecast(
