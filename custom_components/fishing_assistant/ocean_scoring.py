@@ -28,34 +28,23 @@ class OceanFishingScorer(BaseScorer):
 
     def __init__(
         self,
-        hass,
-        config: Dict,
-        species_profiles: dict[str, Any] = None
+        latitude: float,
+        longitude: float,
+        species: List[str],
+        species_profiles: dict[str, Any],
+        hass=None,
+        config: Dict = None
     ):
         """Initialize the scorer."""
+        super().__init__(latitude, longitude, species, species_profiles)
+        
         self.hass = hass
-        self.config = config
-        self.species_loader = SpeciesLoader(hass)
+        self.config = config or {}
+        self.species_loader = SpeciesLoader(hass) if hass else None
         self.species_profile = None
         self._initialized = False
         self._astro_forecast_cache = None
         self._astro_cache_time = None
-        
-        # Initialize BaseScorer with species profiles
-        if species_profiles is None:
-            species_profiles = {}
-        
-        # Get coordinates from config
-        latitude = config.get("latitude", 0.0)
-        longitude = config.get("longitude", 0.0)
-        species_id = config.get(CONF_SPECIES_ID, "general_mixed")
-        
-        super().__init__(
-            latitude=latitude,
-            longitude=longitude,
-            species=[species_id],
-            species_profiles=species_profiles
-        )
 
     async def async_initialize(self):
         """Initialize the scorer asynchronously."""
@@ -63,12 +52,15 @@ class OceanFishingScorer(BaseScorer):
             return
 
         try:
-            await self.species_loader.async_load_profiles()
+            if self.species_loader:
+                await self.species_loader.async_load_profiles()
 
             # Load species profile
-            species_id = self.config.get(CONF_SPECIES_ID, "general_mixed")
-            self.species_profile = self.species_loader.get_species(species_id)
-
+            species_id = self.species[0] if self.species else "general_mixed"
+            
+            if self.species_loader:
+                self.species_profile = self.species_loader.get_species(species_id)
+            
             if not self.species_profile:
                 _LOGGER.warning(
                     "Species profile '%s' not found, using fallback", species_id
@@ -83,7 +75,8 @@ class OceanFishingScorer(BaseScorer):
                 self.species_profiles[species_id] = self.species_profile
 
             # Pre-load astronomical forecast
-            await self._refresh_astro_cache()
+            if self.hass:
+                await self._refresh_astro_cache()
 
             self._initialized = True
 
@@ -95,18 +88,15 @@ class OceanFishingScorer(BaseScorer):
     async def _refresh_astro_cache(self):
         """Refresh astronomical forecast cache."""
         try:
-            latitude = self.config.get("latitude")
-            longitude = self.config.get("longitude")
-            
-            if latitude is None or longitude is None:
+            if self.latitude is None or self.longitude is None:
                 _LOGGER.warning("No coordinates configured, using fallback astro data")
                 return
             
             _LOGGER.info("Refreshing astronomical forecast cache")
             self._astro_forecast_cache = await calculate_astronomy_forecast(
                 self.hass,
-                latitude,
-                longitude,
+                self.latitude,
+                self.longitude,
                 days=7
             )
             self._astro_cache_time = datetime.now()
@@ -217,6 +207,129 @@ class OceanFishingScorer(BaseScorer):
             "temperature": 0.03,
             "cloud_cover": 0.02,
         }
+
+    async def calculate_forecast(
+        self,
+        weather_forecast: List[Dict[str, Any]],
+        tide_forecast: Optional[List[Dict[str, Any]]] = None,
+        marine_forecast: Optional[List[Dict[str, Any]]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Calculate fishing scores for forecast periods.
+        
+        Args:
+            weather_forecast: List of weather forecast data
+            tide_forecast: Optional list of tide forecast data
+            marine_forecast: Optional list of marine forecast data
+            
+        Returns:
+            List of forecast scores with timestamps
+        """
+        forecast_scores = []
+        
+        # Ensure astro cache is fresh
+        if self._astro_forecast_cache is None or (
+            self._astro_cache_time and 
+            (datetime.now() - self._astro_cache_time).total_seconds() > 3600
+        ):
+            await self._refresh_astro_cache()
+        
+        for weather_data in weather_forecast:
+            try:
+                # Get timestamp from weather data
+                forecast_time = weather_data.get("datetime")
+                if not forecast_time:
+                    continue
+                
+                # Find matching astro data
+                astro_data = self._find_astro_for_time(forecast_time)
+                
+                # Find matching tide data
+                tide_data = None
+                if tide_forecast:
+                    tide_data = self._find_tide_for_time(tide_forecast, forecast_time)
+                
+                # Find matching marine data
+                marine_data = None
+                if marine_forecast:
+                    marine_data = self._find_marine_for_time(marine_forecast, forecast_time)
+                
+                # Calculate score
+                score_result = self.calculate_score(
+                    weather_data=weather_data,
+                    astro_data=astro_data,
+                    tide_data=tide_data,
+                    marine_data=marine_data,
+                    current_time=forecast_time
+                )
+                
+                # Add timestamp to result
+                score_result["datetime"] = forecast_time
+                forecast_scores.append(score_result)
+                
+            except Exception as e:
+                _LOGGER.error("Error calculating forecast score: %s", e, exc_info=True)
+                continue
+        
+        return forecast_scores
+
+    def _find_astro_for_time(self, target_time: datetime) -> Dict[str, Any]:
+        """Find astronomical data for a specific time."""
+        if not self._astro_forecast_cache:
+            return {}
+        
+        # Find the closest astro data
+        target_date = target_time.date()
+        for astro_data in self._astro_forecast_cache:
+            astro_date = astro_data.get("date")
+            if astro_date and astro_date == target_date:
+                return astro_data
+        
+        # Return first entry if no match
+        return self._astro_forecast_cache[0] if self._astro_forecast_cache else {}
+
+    def _find_tide_for_time(
+        self, tide_forecast: List[Dict[str, Any]], target_time: datetime
+    ) -> Optional[Dict[str, Any]]:
+        """Find tide data closest to target time."""
+        if not tide_forecast:
+            return None
+        
+        closest_tide = None
+        min_diff = None
+        
+        for tide_data in tide_forecast:
+            tide_time = tide_data.get("datetime")
+            if not tide_time:
+                continue
+            
+            time_diff = abs((tide_time - target_time).total_seconds())
+            if min_diff is None or time_diff < min_diff:
+                min_diff = time_diff
+                closest_tide = tide_data
+        
+        return closest_tide
+
+    def _find_marine_for_time(
+        self, marine_forecast: List[Dict[str, Any]], target_time: datetime
+    ) -> Optional[Dict[str, Any]]:
+        """Find marine data closest to target time."""
+        if not marine_forecast:
+            return None
+        
+        closest_marine = None
+        min_diff = None
+        
+        for marine_data in marine_forecast:
+            marine_time = marine_data.get("datetime")
+            if not marine_time:
+                continue
+            
+            time_diff = abs((marine_time - target_time).total_seconds())
+            if min_diff is None or time_diff < min_diff:
+                min_diff = time_diff
+                closest_marine = marine_data
+        
+        return closest_marine
 
     def _score_temperature(self, temperature: float) -> float:
         """Score based on temperature."""
@@ -505,7 +618,7 @@ class OceanFishingScorer(BaseScorer):
         if not weather_data and not marine_data:
             return "unknown", ["Insufficient data to assess safety"]
         
-        habitat_preset = self.config.get(CONF_HABITAT_PRESET, "rocky_point")
+        habitat_preset = self.config.get(CONF_HABITAT_PRESET, "rocky_point") if self.config else "rocky_point"
         habitat = HABITAT_PRESETS.get(habitat_preset, HABITAT_PRESETS.get("rocky_point", {}))
         
         if not habitat:

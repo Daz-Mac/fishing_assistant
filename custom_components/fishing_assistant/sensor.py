@@ -20,6 +20,8 @@ from .const import (
     TIDE_MODE_PROXY,
     CONF_TIME_PERIODS,
     PERIOD_FULL_DAY,
+    CONF_SPECIES_ID,
+    CONF_HABITAT_PRESET,
 )
 from .score import FreshwaterFishingScorer
 from .ocean_scoring import OceanFishingScorer
@@ -204,8 +206,16 @@ class FishScoreSensor(SensorEntity):
         self._species_loader = species_loader
         self._weather_fetcher = weather_fetcher
         
-        # Initialize the scorer
+        # Get species profile
+        species_profile = species_loader.get_species(fish)
+        species_profiles = {fish: species_profile} if species_profile else {}
+        
+        # Initialize the scorer with correct signature
         self._scorer = FreshwaterFishingScorer(
+            latitude=lat,
+            longitude=lon,
+            species=[fish],
+            species_profiles=species_profiles,
             species_name=fish,
             body_type=body_type,
             species_loader=species_loader
@@ -296,34 +306,40 @@ class FishScoreSensor(SensorEntity):
             result = self._scorer.calculate_score(
                 weather_data=weather_data,
                 astro_data=astro_data,
-                target_time=now,
+                current_time=now,
             )
             
-            # Set current score and attributes
-            self._state = result["score"]
-            self._attrs["breakdown"] = result.get("breakdown", {})
-            self._attrs["component_scores"] = result.get("component_scores", {})
+            # Format result using DataFormatter
+            formatted_result = DataFormatter.format_score_result(result)
             
-            # Get 7-day forecast
-            weather_entity_id = self._attrs.get("weather_entity")
-            if weather_entity_id:
-                forecast = await self._scorer.calculate_forecast(
-                    weather_entity_id=weather_entity_id,
-                    latitude=self._attrs["lat"],
-                    longitude=self._attrs["lon"],
-                    period_type=self._attrs["period_type"],
-                    days=7,
+            # Set current score and attributes
+            self._state = formatted_result["score"]
+            self._attrs.update({
+                "breakdown": formatted_result.get("breakdown", {}),
+                "component_scores": formatted_result.get("component_scores", {}),
+                "rating": formatted_result.get("rating"),
+                "last_updated": now.isoformat(),
+            })
+            
+            # Get forecast if weather entity is available
+            if weather_data_raw.get("forecast"):
+                forecast_scores = await self._scorer.calculate_forecast(
+                    weather_forecast=weather_data_raw["forecast"],
                 )
-                self._attrs["forecast"] = forecast
+                # Format forecast
+                formatted_forecast = [
+                    DataFormatter.format_score_result(score)
+                    for score in forecast_scores
+                ]
+                self._attrs["forecast"] = formatted_forecast
             
             self._last_update_hour = now.hour
             
             _LOGGER.debug(
-                "Updated %s: score=%s, component_scores=%s, forecast_days=%d",
+                "Updated %s: score=%s, component_scores=%s",
                 self._name,
                 self._state,
                 self._attrs.get("component_scores"),
-                len(self._attrs.get("forecast", []))
             )
             
         except Exception as e:
@@ -384,15 +400,19 @@ class OceanFishingScoreSensor(SensorEntity):
         name = data["name"]
         lat = data["latitude"]
         lon = data["longitude"]
+        species_id = data.get(CONF_SPECIES_ID, "general_mixed")
 
-        # Initialize the ocean scorer
+        # Initialize species loader
+        species_loader = SpeciesLoader(hass)
+        
+        # Initialize the ocean scorer with correct signature
         self._scorer = OceanFishingScorer(
-            hass=hass,
             latitude=lat,
             longitude=lon,
-            habitat_preset=data.get("habitat_preset"),
-            species_focus=data.get("species_focus"),
-            species_loader=SpeciesLoader(hass)
+            species=[species_id],
+            species_profiles={},
+            hass=hass,
+            config=data
         )
 
         self._device_identifier = f"{name}_{lat}_{lon}_ocean"
@@ -407,8 +427,8 @@ class OceanFishingScoreSensor(SensorEntity):
             "latitude": lat,
             "longitude": lon,
             "mode": "ocean",
-            "habitat": data.get("habitat_preset"),
-            "species_focus": data.get("species_focus", "Unknown"),
+            "habitat": data.get(CONF_HABITAT_PRESET),
+            "species_focus": species_id,
         }
 
     @property
@@ -467,45 +487,61 @@ class OceanFishingScoreSensor(SensorEntity):
         try:
             # Gather all raw data
             weather_data_raw = await self._weather_fetcher.get_weather_data()
-            tide_data_raw = await self._tide_proxy.get_tide_data() if self._tide_proxy else {}
-            marine_data_raw = await self._marine_fetcher.get_marine_data() if self._marine_fetcher else {}
+            tide_data_raw = await self._tide_proxy.get_tide_data() if self._tide_proxy else None
+            marine_data_raw = await self._marine_fetcher.get_marine_data() if self._marine_fetcher else None
             astro_data_raw = await self._get_astro_data()
 
             # Format data using DataFormatter
             weather_data = DataFormatter.format_weather_data(weather_data_raw) if weather_data_raw else {}
-            tide_data = DataFormatter.format_tide_data(tide_data_raw) if tide_data_raw else {}
-            marine_data = DataFormatter.format_marine_data(marine_data_raw) if marine_data_raw else {}
+            tide_data = DataFormatter.format_tide_data(tide_data_raw) if tide_data_raw else None
+            marine_data = DataFormatter.format_marine_data(marine_data_raw) if marine_data_raw else None
             astro_data = DataFormatter.format_astro_data(astro_data_raw)
 
             # Calculate current score
             result = self._scorer.calculate_score(
                 weather_data=weather_data,
+                astro_data=astro_data,
                 tide_data=tide_data,
                 marine_data=marine_data,
-                astro_data=astro_data,
+                current_time=now,
             )
 
-            self._state = result["score"]
+            # Format result using DataFormatter
+            formatted_result = DataFormatter.format_score_result(result)
+
+            self._state = formatted_result["score"]
             self._attrs.update({
-                "safety": result.get("safety"),
-                "tide_state": result.get("tide_state"),
-                "best_window": result.get("best_window"),
-                "conditions_summary": result.get("conditions_summary"),
-                "breakdown": result.get("breakdown"),
-                "component_scores": result.get("component_scores"),
+                "rating": formatted_result.get("rating"),
+                "breakdown": formatted_result.get("breakdown", {}),
+                "component_scores": formatted_result.get("component_scores", {}),
+                "tide_state": tide_data.get("state") if tide_data else None,
                 "last_updated": now.isoformat(),
             })
 
-            # Calculate 5-day forecast
-            weather_entity_id = self._config_entry.data.get(CONF_WEATHER_ENTITY)
-            if weather_entity_id:
-                forecast = await self._scorer.calculate_forecast(
-                    weather_entity_id=weather_entity_id,
-                    latitude=self._attrs["latitude"],
-                    longitude=self._attrs["longitude"],
-                    days=5,
+            # Check safety
+            safety_status, safety_reasons = self._scorer.check_safety(weather_data, marine_data or {})
+            self._attrs["safety"] = {
+                "status": safety_status,
+                "reasons": safety_reasons
+            }
+
+            # Calculate forecast if weather forecast is available
+            if weather_data_raw and weather_data_raw.get("forecast"):
+                tide_forecast = tide_data_raw.get("forecast") if tide_data_raw else None
+                marine_forecast = marine_data_raw.get("forecast") if marine_data_raw else None
+                
+                forecast_scores = await self._scorer.calculate_forecast(
+                    weather_forecast=weather_data_raw["forecast"],
+                    tide_forecast=tide_forecast,
+                    marine_forecast=marine_forecast,
                 )
-                self._attrs["forecast"] = forecast
+                
+                # Format forecast
+                formatted_forecast = [
+                    DataFormatter.format_score_result(score)
+                    for score in forecast_scores
+                ]
+                self._attrs["forecast"] = formatted_forecast
 
             self._last_update_hour = now.hour
 
@@ -613,12 +649,14 @@ class TideStateSensor(SensorEntity):
     async def async_update(self):
         """Update tide state."""
         try:
-            tide_data = await self._tide_proxy.get_tide_data()
+            tide_data_raw = await self._tide_proxy.get_tide_data()
+            tide_data = DataFormatter.format_tide_data(tide_data_raw)
+            
             self._state = tide_data.get("state", "unknown")
             self._attrs = {
                 "next_high": tide_data.get("next_high"),
                 "next_low": tide_data.get("next_low"),
-                "source": tide_data.get("source"),
+                "strength": tide_data.get("strength"),
             }
         except Exception as e:
             _LOGGER.error(f"Error updating tide state: {e}")
@@ -679,7 +717,8 @@ class TideStrengthSensor(SensorEntity):
     async def async_update(self):
         """Update tide strength."""
         try:
-            tide_data = await self._tide_proxy.get_tide_data()
+            tide_data_raw = await self._tide_proxy.get_tide_data()
+            tide_data = DataFormatter.format_tide_data(tide_data_raw)
             self._state = tide_data.get("strength", 50)
         except Exception as e:
             _LOGGER.error(f"Error updating tide strength: {e}")
@@ -749,7 +788,9 @@ class WaveHeightSensor(SensorEntity):
     async def async_update(self):
         """Update wave height."""
         try:
-            marine_data = await self._marine_fetcher.get_marine_data()
+            marine_data_raw = await self._marine_fetcher.get_marine_data()
+            marine_data = DataFormatter.format_marine_data(marine_data_raw)
+            
             current = marine_data.get("current", {})
             self._state = current.get("wave_height")
             self._attrs = {
@@ -816,7 +857,9 @@ class WavePeriodSensor(SensorEntity):
     async def async_update(self):
         """Update wave period."""
         try:
-            marine_data = await self._marine_fetcher.get_marine_data()
+            marine_data_raw = await self._marine_fetcher.get_marine_data()
+            marine_data = DataFormatter.format_marine_data(marine_data_raw)
+            
             current = marine_data.get("current", {})
             self._state = current.get("wave_period")
         except Exception as e:
@@ -889,8 +932,9 @@ class WindSpeedSensor(SensorEntity):
     async def async_update(self):
         """Update wind speed."""
         try:
-            weather_data = await self._weather_fetcher.get_weather_data()
-            if weather_data:
+            weather_data_raw = await self._weather_fetcher.get_weather_data()
+            if weather_data_raw:
+                weather_data = DataFormatter.format_weather_data(weather_data_raw)
                 self._state = weather_data.get("wind_speed")
         except Exception as e:
             _LOGGER.error(f"Error updating wind speed: {e}")
@@ -962,12 +1006,10 @@ class WindGustSensor(SensorEntity):
     async def async_update(self):
         """Update wind gust speed."""
         try:
-            weather_data = await self._weather_fetcher.get_weather_data()
-            if weather_data:
-                self._state = weather_data.get(
-                    "wind_gust",
-                    weather_data.get("wind_speed")
-                )
+            weather_data_raw = await self._weather_fetcher.get_weather_data()
+            if weather_data_raw:
+                weather_data = DataFormatter.format_weather_data(weather_data_raw)
+                self._state = weather_data.get("wind_gust", weather_data.get("wind_speed"))
         except Exception as e:
             _LOGGER.error(f"Error updating wind gust: {e}")
             self._state = None

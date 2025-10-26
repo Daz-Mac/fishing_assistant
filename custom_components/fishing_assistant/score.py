@@ -15,39 +15,44 @@ class FreshwaterFishingScorer(BaseScorer):
 
     def __init__(
         self,
-        species_name: str,
-        body_type: str,
-        species_loader: SpeciesLoader,
-        latitude: float = 0.0,
-        longitude: float = 0.0,
+        latitude: float,
+        longitude: float,
+        species: List[str],
+        species_profiles: dict[str, Any],
+        species_name: str = None,
+        body_type: str = None,
+        species_loader: SpeciesLoader = None,
     ):
         """Initialize the freshwater scorer.
         
         Args:
-            species_name: Name of the target species
-            body_type: Type of water body (lake, river, etc.)
-            species_loader: Species loader instance
             latitude: Location latitude
             longitude: Location longitude
+            species: List of species IDs
+            species_profiles: Dictionary of species profiles
+            species_name: Name of the target species (legacy)
+            body_type: Type of water body (lake, river, etc.)
+            species_loader: Species loader instance
         """
-        self.species_name = species_name
-        self.body_type = body_type
+        super().__init__(latitude, longitude, species, species_profiles)
+        
+        self.species_name = species_name or (species[0] if species else "general")
+        self.body_type = body_type or "lake"
         self.species_loader = species_loader
         
         # Get species profile
-        self.species_profile = species_loader.get_species(species_name)
-        if not self.species_profile:
-            _LOGGER.warning(f"Species profile not found: {species_name}")
+        if self.species_name in species_profiles:
+            self.species_profile = species_profiles[self.species_name]
+        elif species_loader:
+            self.species_profile = species_loader.get_species(self.species_name)
+            if self.species_profile:
+                self.species_profiles[self.species_name] = self.species_profile
+        else:
             self.species_profile = {}
         
-        # Initialize parent with required parameters
-        species_profiles = {species_name: self.species_profile}
-        super().__init__(
-            latitude=latitude,
-            longitude=longitude,
-            species=[species_name],
-            species_profiles=species_profiles
-        )
+        if not self.species_profile:
+            _LOGGER.warning(f"Species profile not found: {self.species_name}")
+            self.species_profile = {}
 
     def _calculate_base_score(
         self,
@@ -121,6 +126,53 @@ class FreshwaterFishingScorer(BaseScorer):
             "season": 0.10,
             "moon": 0.05,
         }
+
+    async def calculate_forecast(
+        self,
+        weather_forecast: List[Dict[str, Any]],
+        tide_forecast: Optional[List[Dict[str, Any]]] = None,
+        marine_forecast: Optional[List[Dict[str, Any]]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Calculate fishing scores for forecast periods.
+        
+        Args:
+            weather_forecast: List of weather forecast data
+            tide_forecast: Optional list of tide forecast data (not used for freshwater)
+            marine_forecast: Optional list of marine forecast data (not used for freshwater)
+            
+        Returns:
+            List of forecast scores with timestamps
+        """
+        forecast_scores = []
+        
+        for weather_data in weather_forecast:
+            try:
+                # Get timestamp from weather data
+                forecast_time = weather_data.get("datetime")
+                if not forecast_time:
+                    continue
+                
+                # Get astro data for this time
+                astro_data = weather_data.get("astro", {})
+                
+                # Calculate score
+                score_result = self.calculate_score(
+                    weather_data=weather_data,
+                    astro_data=astro_data,
+                    tide_data=None,
+                    marine_data=None,
+                    current_time=forecast_time
+                )
+                
+                # Add timestamp to result
+                score_result["datetime"] = forecast_time
+                forecast_scores.append(score_result)
+                
+            except Exception as e:
+                _LOGGER.error("Error calculating forecast score: %s", e, exc_info=True)
+                continue
+        
+        return forecast_scores
 
     def _score_temperature(self, temperature: float) -> float:
         """Score based on temperature."""
