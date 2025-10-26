@@ -1,8 +1,6 @@
 """Sensor platform for Fishing Assistant."""
-from homeassistant.helpers.entity import Entity
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
 from homeassistant.const import UnitOfLength, UnitOfSpeed, PERCENTAGE
 from homeassistant.util import dt as dt_util
@@ -74,6 +72,7 @@ async def _setup_freshwater_sensors(hass, config_entry, async_add_entities):
     for fish in fish_list:
         sensors.append(
             FishScoreSensor(
+                hass=hass,
                 name=name,
                 fish=fish,
                 lat=lat,
@@ -196,7 +195,8 @@ class FishScoreSensor(SensorEntity):
 
     should_poll = True
 
-    def __init__(self, name, fish, lat, lon, body_type, timezone, elevation, period_type, weather_entity, weather_fetcher, species_loader, config_entry_id):
+    def __init__(self, hass, name, fish, lat, lon, body_type, timezone, elevation, period_type, weather_entity, weather_fetcher, species_loader, config_entry_id):
+        self.hass = hass
         self._last_update_hour = None
         self._config_entry_id = config_entry_id
         self._device_identifier = f"{name}_{lat}_{lon}"
@@ -216,9 +216,6 @@ class FishScoreSensor(SensorEntity):
             longitude=lon,
             species=[fish],
             species_profiles=species_profiles,
-            species_name=fish,
-            body_type=body_type,
-            species_loader=species_loader
         )
         
         self._attrs = {
@@ -295,29 +292,22 @@ class FishScoreSensor(SensorEntity):
                 _LOGGER.error("No weather data available for freshwater sensor")
                 return
             
-            # Format weather data using DataFormatter
-            weather_data = DataFormatter.format_weather_data(weather_data_raw)
-            
             # Get current astro data
             astro_data_raw = await self._get_astro_data()
-            astro_data = DataFormatter.format_astro_data(astro_data_raw)
             
-            # Calculate current score
+            # Calculate current score (scorer handles formatting internally)
             result = self._scorer.calculate_score(
-                weather_data=weather_data,
-                astro_data=astro_data,
+                weather_data=weather_data_raw,
+                astro_data=astro_data_raw,
                 current_time=now,
             )
             
-            # Format result using DataFormatter
-            formatted_result = DataFormatter.format_score_result(result)
-            
-            # Set current score and attributes
-            self._state = formatted_result["score"]
+            # Result is already formatted by the scorer
+            self._state = result["score"]
             self._attrs.update({
-                "breakdown": formatted_result.get("breakdown", {}),
-                "component_scores": formatted_result.get("component_scores", {}),
-                "rating": formatted_result.get("rating"),
+                "breakdown": result.get("breakdown", {}),
+                "component_scores": result.get("component_scores", {}),
+                "rating": result.get("rating"),
                 "last_updated": now.isoformat(),
             })
             
@@ -326,12 +316,8 @@ class FishScoreSensor(SensorEntity):
                 forecast_scores = await self._scorer.calculate_forecast(
                     weather_forecast=weather_data_raw["forecast"],
                 )
-                # Format forecast
-                formatted_forecast = [
-                    DataFormatter.format_score_result(score)
-                    for score in forecast_scores
-                ]
-                self._attrs["forecast"] = formatted_forecast
+                # Forecast is already formatted by the scorer
+                self._attrs["forecast"] = forecast_scores
             
             self._last_update_hour = now.hour
             
@@ -491,35 +477,33 @@ class OceanFishingScoreSensor(SensorEntity):
             marine_data_raw = await self._marine_fetcher.get_marine_data() if self._marine_fetcher else None
             astro_data_raw = await self._get_astro_data()
 
-            # Format data using DataFormatter
-            weather_data = DataFormatter.format_weather_data(weather_data_raw) if weather_data_raw else {}
-            tide_data = DataFormatter.format_tide_data(tide_data_raw) if tide_data_raw else None
-            marine_data = DataFormatter.format_marine_data(marine_data_raw) if marine_data_raw else None
-            astro_data = DataFormatter.format_astro_data(astro_data_raw)
-
-            # Calculate current score
+            # Calculate current score (scorer handles formatting internally)
             result = self._scorer.calculate_score(
-                weather_data=weather_data,
-                astro_data=astro_data,
-                tide_data=tide_data,
-                marine_data=marine_data,
+                weather_data=weather_data_raw,
+                astro_data=astro_data_raw,
+                tide_data=tide_data_raw,
+                marine_data=marine_data_raw,
                 current_time=now,
             )
 
-            # Format result using DataFormatter
-            formatted_result = DataFormatter.format_score_result(result)
-
-            self._state = formatted_result["score"]
+            # Result is already formatted by the scorer
+            self._state = result["score"]
             self._attrs.update({
-                "rating": formatted_result.get("rating"),
-                "breakdown": formatted_result.get("breakdown", {}),
-                "component_scores": formatted_result.get("component_scores", {}),
-                "tide_state": tide_data.get("state") if tide_data else None,
+                "rating": result.get("rating"),
+                "breakdown": result.get("breakdown", {}),
+                "component_scores": result.get("component_scores", {}),
                 "last_updated": now.isoformat(),
             })
 
+            # Add tide state if available
+            if tide_data_raw:
+                tide_data = DataFormatter.format_tide_data(tide_data_raw)
+                self._attrs["tide_state"] = tide_data.get("state") if tide_data else None
+
             # Check safety
-            safety_status, safety_reasons = self._scorer.check_safety(weather_data, marine_data or {})
+            weather_data = DataFormatter.format_weather_data(weather_data_raw) if weather_data_raw else {}
+            marine_data = DataFormatter.format_marine_data(marine_data_raw) if marine_data_raw else {}
+            safety_status, safety_reasons = self._scorer.check_safety(weather_data, marine_data)
             self._attrs["safety"] = {
                 "status": safety_status,
                 "reasons": safety_reasons
@@ -536,12 +520,8 @@ class OceanFishingScoreSensor(SensorEntity):
                     marine_forecast=marine_forecast,
                 )
                 
-                # Format forecast
-                formatted_forecast = [
-                    DataFormatter.format_score_result(score)
-                    for score in forecast_scores
-                ]
-                self._attrs["forecast"] = formatted_forecast
+                # Forecast is already formatted by the scorer
+                self._attrs["forecast"] = forecast_scores
 
             self._last_update_hour = now.hour
 
@@ -650,6 +630,11 @@ class TideStateSensor(SensorEntity):
         """Update tide state."""
         try:
             tide_data_raw = await self._tide_proxy.get_tide_data()
+            if not tide_data_raw:
+                _LOGGER.warning("No tide data available")
+                self._state = "unknown"
+                return
+                
             tide_data = DataFormatter.format_tide_data(tide_data_raw)
             
             self._state = tide_data.get("state", "unknown")
@@ -718,6 +703,11 @@ class TideStrengthSensor(SensorEntity):
         """Update tide strength."""
         try:
             tide_data_raw = await self._tide_proxy.get_tide_data()
+            if not tide_data_raw:
+                _LOGGER.warning("No tide data available")
+                self._state = None
+                return
+                
             tide_data = DataFormatter.format_tide_data(tide_data_raw)
             self._state = tide_data.get("strength", 50)
         except Exception as e:
@@ -789,6 +779,11 @@ class WaveHeightSensor(SensorEntity):
         """Update wave height."""
         try:
             marine_data_raw = await self._marine_fetcher.get_marine_data()
+            if not marine_data_raw:
+                _LOGGER.warning("No marine data available")
+                self._state = None
+                return
+                
             marine_data = DataFormatter.format_marine_data(marine_data_raw)
             
             current = marine_data.get("current", {})
@@ -858,6 +853,11 @@ class WavePeriodSensor(SensorEntity):
         """Update wave period."""
         try:
             marine_data_raw = await self._marine_fetcher.get_marine_data()
+            if not marine_data_raw:
+                _LOGGER.warning("No marine data available")
+                self._state = None
+                return
+                
             marine_data = DataFormatter.format_marine_data(marine_data_raw)
             
             current = marine_data.get("current", {})
