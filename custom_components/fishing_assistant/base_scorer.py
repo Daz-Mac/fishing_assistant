@@ -58,19 +58,19 @@ class BaseScorer(ABC):
     @abstractmethod
     def _calculate_base_score(
         self,
-        weather: WeatherData,
-        astro: AstroData,
-        tide: Optional[TideData] = None,
-        marine: Optional[MarineData] = None,
+        weather_data: Dict[str, Any],
+        astro_data: Dict[str, Any],
+        tide_data: Optional[Dict[str, Any]] = None,
+        marine_data: Optional[Dict[str, Any]] = None,
         current_time: Optional[Any] = None,
     ) -> ComponentScores:
         """Calculate component scores.
         
         Args:
-            weather: Formatted weather data
-            astro: Formatted astronomical data
-            tide: Optional formatted tide data
-            marine: Optional formatted marine data
+            weather_data: Raw weather data dictionary
+            astro_data: Raw astronomical data dictionary
+            tide_data: Optional raw tide data dictionary
+            marine_data: Optional raw marine data dictionary
             current_time: Optional datetime object for time-based scoring
             
         Returns:
@@ -107,16 +107,13 @@ class BaseScorer(ABC):
         Returns:
             ScoringResult with score, breakdown, and component scores
         """
-        # Format input data using DataFormatter
-        weather = DataFormatter.format_weather_data(weather_data)
-        astro = DataFormatter.format_astro_data(astro_data)
-        tide = DataFormatter.format_tide_data(tide_data) if tide_data else None
-        marine = DataFormatter.format_marine_data(marine_data) if marine_data else None
-        
-        # Calculate component scores
+        # Calculate component scores (implementations will format data internally)
         component_scores = self._calculate_base_score(
-            weather, astro, tide, marine, current_time
+            weather_data, astro_data, tide_data, marine_data, current_time
         )
+        
+        # Format weather for summary (we still need it here)
+        weather = DataFormatter.format_weather_data(weather_data)
         
         # Get weights and calculate weighted average
         weights = self._get_factor_weights()

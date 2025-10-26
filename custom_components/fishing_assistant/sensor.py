@@ -292,15 +292,12 @@ class FishScoreSensor(SensorEntity):
                 _LOGGER.error("No weather data available for freshwater sensor")
                 return
             
-            # Format the weather data
-            weather_data = DataFormatter.format_weather_data(weather_data_raw)
-            
             # Get current astro data (already in correct format)
             astro_data = await self._get_astro_data()
             
-            # Calculate current score
+            # Calculate current score - pass raw data, scorer will format internally
             result = self._scorer.calculate_score(
-                weather_data=weather_data,
+                weather_data=weather_data_raw,
                 astro_data=astro_data,
                 current_time=now,
             )
@@ -322,13 +319,11 @@ class FishScoreSensor(SensorEntity):
                 for date_str, data in forecast_raw.items():
                     # Parse the date string
                     forecast_date = datetime.fromisoformat(date_str)
-                    # Format the weather data
-                    formatted_data = DataFormatter.format_weather_data(data)
-                    formatted_data["datetime"] = forecast_date
-                    formatted_data["astro"] = astro_data  # Use same astro data for simplicity
-                    forecast_list.append(formatted_data)
+                    # Add datetime to the raw data
+                    data["datetime"] = forecast_date
+                    forecast_list.append(data)
                 
-                # Calculate forecast scores
+                # Calculate forecast scores - pass raw data
                 forecast_scores = await self._scorer.calculate_forecast(
                     weather_forecast=forecast_list,
                 )
@@ -491,24 +486,18 @@ class OceanFishingScoreSensor(SensorEntity):
             weather_data_raw = await self._weather_fetcher.get_weather_data()
             tide_data_raw = await self._tide_proxy.get_tide_data() if self._tide_proxy else None
             marine_data_raw = await self._marine_fetcher.get_marine_data() if self._marine_fetcher else None
-            astro_data_raw = await self._get_astro_data()
+            astro_data = await self._get_astro_data()
 
             if not weather_data_raw:
                 _LOGGER.error("No weather data available for ocean sensor")
                 return
 
-            # Format all the data
-            weather_data = DataFormatter.format_weather_data(weather_data_raw)
-            tide_data = DataFormatter.format_tide_data(tide_data_raw) if tide_data_raw else None
-            marine_data = DataFormatter.format_marine_data(marine_data_raw) if marine_data_raw else None
-            astro_data = astro_data_raw  # Already in correct format
-
-            # Calculate current score
+            # Calculate current score - pass raw data, scorer will format internally
             result = self._scorer.calculate_score(
-                weather_data=weather_data,
+                weather_data=weather_data_raw,
                 astro_data=astro_data,
-                tide_data=tide_data,
-                marine_data=marine_data,
+                tide_data=tide_data_raw,
+                marine_data=marine_data_raw,
                 current_time=now,
             )
 
@@ -522,11 +511,14 @@ class OceanFishingScoreSensor(SensorEntity):
             })
 
             # Add tide state if available
-            if tide_data:
+            if tide_data_raw:
+                tide_data = DataFormatter.format_tide_data(tide_data_raw)
                 self._attrs["tide_state"] = tide_data.get("state")
 
-            # Check safety
-            safety_status, safety_reasons = self._scorer.check_safety(weather_data, marine_data or {})
+            # Check safety - format data for safety check
+            weather_formatted = DataFormatter.format_weather_data(weather_data_raw)
+            marine_formatted = DataFormatter.format_marine_data(marine_data_raw) if marine_data_raw else {}
+            safety_status, safety_reasons = self._scorer.check_safety(weather_formatted, marine_formatted)
             self._attrs["safety"] = {
                 "status": safety_status,
                 "reasons": safety_reasons
@@ -539,27 +531,20 @@ class OceanFishingScoreSensor(SensorEntity):
                 forecast_list = []
                 for date_str, data in forecast_raw.items():
                     forecast_date = datetime.fromisoformat(date_str)
-                    formatted_data = DataFormatter.format_weather_data(data)
-                    formatted_data["datetime"] = forecast_date
-                    forecast_list.append(formatted_data)
+                    data["datetime"] = forecast_date
+                    forecast_list.append(data)
                 
                 # Get tide and marine forecasts if available
                 tide_forecast = None
                 marine_forecast = None
                 
                 if tide_data_raw and "forecast" in tide_data_raw:
-                    tide_forecast = [
-                        DataFormatter.format_tide_data(t) 
-                        for t in tide_data_raw["forecast"]
-                    ]
+                    tide_forecast = tide_data_raw["forecast"]
                 
                 if marine_data_raw and "forecast" in marine_data_raw:
-                    marine_forecast = [
-                        DataFormatter.format_marine_data(m) 
-                        for m in marine_data_raw["forecast"]
-                    ]
+                    marine_forecast = marine_data_raw["forecast"]
                 
-                # Calculate forecast scores
+                # Calculate forecast scores - pass raw data
                 forecast_scores = await self._scorer.calculate_forecast(
                     weather_forecast=forecast_list,
                     tide_forecast=tide_forecast,

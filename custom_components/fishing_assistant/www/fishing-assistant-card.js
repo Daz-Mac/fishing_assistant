@@ -97,12 +97,10 @@ class FishingAssistantCard extends HTMLElement {
   }
 
   getMarineDetails(hass, entity) {
-    // Use location_key if available, otherwise fall back to location name
     const location = entity.attributes.location_key || entity.attributes.location;
     if (!location) return {};
     
     const locationKey = location.toLowerCase().replace(/ /g, '_');
-
     if (!locationKey) return {};
 
     const waveHeightEntity = hass.states[`sensor.${locationKey}_wave_height`];
@@ -235,7 +233,6 @@ class FishingAssistantCard extends HTMLElement {
     const scoreColor = getScoreColor(score);
     const scoreLabel = getScoreLabel(score);
 
-    // Updated to use new data structure
     const componentScores = attrs.component_scores || {};
     const breakdown = attrs.breakdown || {};
 
@@ -856,7 +853,6 @@ class FishingAssistantCard extends HTMLElement {
     if (this._expandedDays.size > 0) {
       this._expandedDays.clear();
     } else {
-      // Handle both array and object forecast formats
       if (Array.isArray(forecast)) {
         forecast.forEach((day, index) => this._expandedDays.add(day.date || index.toString()));
       } else {
@@ -870,7 +866,6 @@ class FishingAssistantCard extends HTMLElement {
   renderForecast(forecast, maxDays = 5) {
     if (!forecast || forecast.length === 0) return '';
 
-    // Handle array format from DataFormatter
     const forecastArray = Array.isArray(forecast) ? forecast.slice(0, maxDays) : [];
 
     const getTideEmoji = (tide) => {
@@ -886,16 +881,33 @@ class FishingAssistantCard extends HTMLElement {
       return tideMap[tide] || '〰️';
     };
 
+    const getScoreClass = (score) => {
+      const scoreValue = Math.round(score * 100);
+      if (scoreValue >= 70) return 'excellent';
+      if (scoreValue >= 40) return 'good';
+      return 'poor';
+    };
+
+    const getSafetyClass = (safety) => {
+      const status = typeof safety === 'object' ? safety.status : safety;
+      if (status === 'unsafe') return 'unsafe';
+      if (status === 'caution') return 'caution';
+      return '';
+    };
+
     return forecastArray.map((day, index) => {
       const dayDate = day.date || day.datetime || index.toString();
       const dayName = day.day_name || new Date(dayDate).toLocaleDateString('en-US', { weekday: 'short' });
       const avgScore = Math.round((day.score || 0) * 100);
       const isExpanded = this._expandedDays.has(dayDate) || this.config.expand_forecast;
 
-      // Get rating and safety
       const rating = day.rating || '';
       const safetyStatus = typeof day.safety === 'object' ? day.safety.status : day.safety;
       const safetyReasons = typeof day.safety === 'object' ? day.safety.reasons : [];
+
+      // Get periods data
+      const periods = day.periods || {};
+      const periodOrder = ['morning', 'afternoon', 'evening', 'night'];
 
       return `
         <div class="forecast-day">
@@ -907,21 +919,109 @@ class FishingAssistantCard extends HTMLElement {
             <span class="expand-icon ${isExpanded ? 'expanded' : ''}">▼</span>
           </div>
           <div class="time-blocks ${isExpanded ? '' : 'collapsed'}">
-            <div style="grid-column: 1 / -1; padding: 12px; text-align: center; background: var(--secondary-background-color); border-radius: 6px;">
-              <div style="font-size: 14px; font-weight: 500; margin-bottom: 8px;">
-                ${rating || 'Forecast'}
-              </div>
-              ${safetyStatus ? `
-                <div style="font-size: 12px; color: ${safetyStatus === 'unsafe' ? '#f44336' : safetyStatus === 'caution' ? '#ff9800' : '#4caf50'};">
-                  ${safetyStatus === 'unsafe' ? '🚫' : safetyStatus === 'caution' ? '⚠️' : '✅'} ${safetyStatus}
+            ${periodOrder.map(periodName => {
+              const period = periods[periodName];
+              if (!period) return '';
+
+              const periodScore = Math.round((period.score || 0) * 100);
+              const scoreClass = getScoreClass(period.score || 0);
+              const safetyClass = getSafetyClass(period.safety);
+              const periodSafetyStatus = typeof period.safety === 'object' ? period.safety.status : period.safety;
+              
+              const periodDataJson = JSON.stringify(period).replace(/"/g, '&quot;');
+
+              return `
+                <div class="time-block ${scoreClass} ${safetyClass}" 
+                     data-day="${dayDate}" 
+                     data-block="${periodName}" 
+                     data-period="${periodDataJson}">
+                  <div class="block-time">${periodName}</div>
+                  <div class="block-score">${periodScore}</div>
+                  ${period.tide_state ? `
+                    <div class="block-tide">${getTideEmoji(period.tide_state)}</div>
+                  ` : ''}
+                  ${periodSafetyStatus && periodSafetyStatus !== 'safe' ? `
+                    <div class="block-safety" style="color: ${periodSafetyStatus === 'unsafe' ? '#f44336' : '#ff9800'};">
+                      ${periodSafetyStatus === 'unsafe' ? '🚫' : '⚠️'}
+                    </div>
+                  ` : ''}
                 </div>
-              ` : ''}
-              ${safetyReasons.length > 0 ? `
-                <div style="font-size: 11px; margin-top: 4px; color: var(--secondary-text-color);">
-                  ${safetyReasons.join(' • ')}
+                <div class="block-details" data-details-key="${dayDate}-${periodName}">
+                  <div class="detail-section">
+                    <div class="detail-section-title">${periodName.toUpperCase()} - ${dayName}</div>
+                    <div class="detail-row">
+                      <span class="detail-label">Score</span>
+                      <span class="detail-value">${periodScore}/100</span>
+                    </div>
+                    ${period.rating ? `
+                      <div class="detail-row">
+                        <span class="detail-label">Rating</span>
+                        <span class="detail-value">${period.rating}</span>
+                      </div>
+                    ` : ''}
+                  </div>
+
+                  ${period.conditions ? `
+                    <div class="detail-section">
+                      <div class="detail-section-title">Conditions</div>
+                      ${period.conditions.temperature !== undefined ? `
+                        <div class="detail-row">
+                          <span class="detail-label">Temperature</span>
+                          <span class="detail-value">${Math.round(period.conditions.temperature)}°C</span>
+                        </div>
+                      ` : ''}
+                      ${period.conditions.wind_speed !== undefined ? `
+                        <div class="detail-row">
+                          <span class="detail-label">Wind Speed</span>
+                          <span class="detail-value">${Math.round(period.conditions.wind_speed)} km/h</span>
+                        </div>
+                      ` : ''}
+                      ${period.conditions.wind_gust !== undefined ? `
+                        <div class="detail-row">
+                          <span class="detail-label">Wind Gust</span>
+                          <span class="detail-value">${Math.round(period.conditions.wind_gust)} km/h</span>
+                        </div>
+                      ` : ''}
+                      ${period.conditions.wave_height !== undefined ? `
+                        <div class="detail-row">
+                          <span class="detail-label">Wave Height</span>
+                          <span class="detail-value">${period.conditions.wave_height.toFixed(1)}m</span>
+                        </div>
+                      ` : ''}
+                      ${period.tide_state ? `
+                        <div class="detail-row">
+                          <span class="detail-label">Tide</span>
+                          <span class="detail-value">${getTideEmoji(period.tide_state)} ${period.tide_state.replace(/_/g, ' ')}</span>
+                        </div>
+                      ` : ''}
+                    </div>
+                  ` : ''}
+
+                  ${period.component_scores && Object.keys(period.component_scores).length > 0 ? `
+                    <div class="detail-section">
+                      <div class="detail-section-title">Component Scores</div>
+                      ${Object.entries(period.component_scores).map(([key, value]) => `
+                        <div class="detail-row">
+                          <span class="detail-label">${key.replace(/_/g, ' ')}</span>
+                          <span class="detail-value">${Math.round(value * 100)}%</span>
+                        </div>
+                      `).join('')}
+                    </div>
+                  ` : ''}
+
+                  ${periodSafetyStatus ? `
+                    <div class="${periodSafetyStatus === 'unsafe' ? 'detail-warning' : periodSafetyStatus === 'caution' ? 'detail-caution' : 'detail-good'}">
+                      ${periodSafetyStatus === 'unsafe' ? '🚫 Unsafe' : periodSafetyStatus === 'caution' ? '⚠️ Caution' : '✅ Safe'}
+                      ${typeof period.safety === 'object' && period.safety.reasons && period.safety.reasons.length > 0 ? `
+                        <div style="margin-top: 4px;">${period.safety.reasons.join(' • ')}</div>
+                      ` : ''}
+                    </div>
+                  ` : ''}
+
+                  <div class="close-hint">Click outside to close</div>
                 </div>
-              ` : ''}
-            </div>
+              `;
+            }).join('')}
           </div>
         </div>
       `;

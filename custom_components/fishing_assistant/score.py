@@ -6,6 +6,7 @@ from typing import Dict, Optional, List, Any
 from .base_scorer import BaseScorer
 from .const import TIME_PERIODS_FULL_DAY
 from .species_loader import SpeciesLoader
+from .data_formatter import DataFormatter
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -52,6 +53,48 @@ class FreshwaterFishingScorer(BaseScorer):
             _LOGGER.warning(f"Species profile not found: {self.species_name}")
             self.species_profile = {}
 
+    def calculate_score(
+        self,
+        weather_data: Dict[str, Any],
+        astro_data: Dict[str, Any],
+        tide_data: Optional[Dict[str, Any]] = None,
+        marine_data: Optional[Dict[str, Any]] = None,
+        current_time: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """Calculate the fishing score with error handling and forecast support.
+        
+        Args:
+            weather_data: Raw weather data dictionary
+            astro_data: Raw astronomical data dictionary
+            tide_data: Optional raw tide data dictionary
+            marine_data: Optional raw marine data dictionary
+            current_time: Optional datetime object for time-based scoring
+            
+        Returns:
+            ScoringResult with score, breakdown, component scores, and forecast
+        """
+        try:
+            # Call parent calculate_score
+            result = super().calculate_score(
+                weather_data, astro_data, tide_data, marine_data, current_time
+            )
+            
+            # Add forecast if available in weather_data
+            if "forecast" in weather_data and isinstance(weather_data["forecast"], list):
+                result["forecast"] = self._format_forecast(weather_data["forecast"], astro_data)
+            
+            return result
+            
+        except Exception as e:
+            _LOGGER.error(f"Error calculating freshwater score: {e}", exc_info=True)
+            # Return default result
+            return DataFormatter.format_score_result({
+                "score": 5.0,
+                "conditions_summary": "Error calculating score",
+                "component_scores": {},
+                "breakdown": {}
+            })
+
     def _calculate_base_score(
         self,
         weather_data: Dict[str, Any],
@@ -60,70 +103,141 @@ class FreshwaterFishingScorer(BaseScorer):
         marine_data: Optional[Dict[str, Any]] = None,
         current_time: Optional[datetime] = None,
     ) -> Dict[str, float]:
-        """Calculate component scores.
+        """Calculate component scores with error handling.
         
         Args:
-            weather_data: Formatted weather data
-            astro_data: Formatted astronomical data
-            tide_data: Optional formatted tide data (not used for freshwater)
-            marine_data: Optional formatted marine data (not used for freshwater)
+            weather_data: Raw weather data dictionary
+            astro_data: Raw astronomical data dictionary
+            tide_data: Optional raw tide data dictionary (not used for freshwater)
+            marine_data: Optional raw marine data dictionary (not used for freshwater)
             current_time: Optional datetime object for time-based scoring
             
         Returns:
-            Dictionary of component scores with capitalized keys matching ComponentScores schema
+            Dictionary of component scores
         """
-        if current_time is None:
-            current_time = datetime.now()
-        
-        components = {}
-        
-        # Temperature Score
-        temp = weather_data.get("temperature")
-        if temp is not None:
-            components["Temperature"] = self._score_temperature(temp)
-        else:
-            components["Temperature"] = 5.0
-        
-        # Wind Score
-        wind_speed = weather_data.get("wind_speed", 0)
-        wind_gust = weather_data.get("wind_gust", wind_speed)
-        components["Wind"] = self._score_wind(wind_speed, wind_gust)
-        
-        # Pressure Score
-        pressure = weather_data.get("pressure", 1013)
-        components["Pressure"] = self._score_pressure(pressure)
-        
-        # Cloud Cover Score
-        cloud_cover = weather_data.get("cloud_cover", 50)
-        components["Clouds"] = self._score_cloud_cover(cloud_cover)
-        
-        # Time of Day Score
-        components["Time"] = self._score_time_of_day(current_time, astro_data)
-        
-        # Season Score
-        components["Season"] = self._score_season(current_time)
-        
-        # Moon Phase Score
-        moon_phase = astro_data.get("moon_phase")
-        components["Moon"] = self._score_moon(moon_phase)
-        
-        return components
+        try:
+            # Format input data
+            weather = DataFormatter.format_weather_data(weather_data)
+            astro = DataFormatter.format_astro_data(astro_data)
+            
+            if current_time is None:
+                current_time = datetime.now()
+            
+            components = {}
+            
+            # Temperature Score
+            temp = weather.get("temperature")
+            if temp is not None:
+                components["temperature"] = self._normalize_score(self._score_temperature(temp))
+            else:
+                components["temperature"] = 5.0
+            
+            # Wind Score
+            wind_speed = weather.get("wind_speed", 0)
+            wind_gust = weather.get("wind_gust", wind_speed)
+            components["wind"] = self._normalize_score(self._score_wind(wind_speed, wind_gust))
+            
+            # Pressure Score
+            pressure = weather.get("pressure", 1013)
+            components["pressure"] = self._normalize_score(self._score_pressure(pressure))
+            
+            # Cloud Cover Score
+            cloud_cover = weather.get("cloud_cover", 50)
+            components["clouds"] = self._normalize_score(self._score_cloud_cover(cloud_cover))
+            
+            # Time of Day Score
+            components["time"] = self._normalize_score(self._score_time_of_day(current_time, astro))
+            
+            # Season Score
+            components["season"] = self._normalize_score(self._score_season(current_time))
+            
+            # Moon Phase Score
+            moon_phase = astro.get("moon_phase")
+            components["moon"] = self._normalize_score(self._score_moon(moon_phase))
+            
+            return components
+            
+        except Exception as e:
+            _LOGGER.error(f"Error in _calculate_base_score: {e}", exc_info=True)
+            # Return default scores
+            return {
+                "temperature": 5.0,
+                "wind": 5.0,
+                "pressure": 5.0,
+                "clouds": 5.0,
+                "time": 5.0,
+                "season": 5.0,
+                "moon": 5.0,
+            }
 
     def _get_factor_weights(self) -> Dict[str, float]:
         """Get factor weights for scoring.
         
         Returns:
-            Dictionary of factor weights with capitalized keys
+            Dictionary of factor weights
         """
         return {
-            "Temperature": 0.25,
-            "Wind": 0.15,
-            "Pressure": 0.15,
-            "Clouds": 0.15,
-            "Time": 0.15,
-            "Season": 0.10,
-            "Moon": 0.05,
+            "temperature": 0.25,
+            "wind": 0.15,
+            "pressure": 0.15,
+            "clouds": 0.15,
+            "time": 0.15,
+            "season": 0.10,
+            "moon": 0.05,
         }
+
+    def _format_forecast(self, forecast_data: List[Dict[str, Any]], astro_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Format forecast data for frontend compatibility.
+        
+        Args:
+            forecast_data: List of forecast entries
+            astro_data: Astronomical data for moon phase
+            
+        Returns:
+            List of formatted forecast entries
+        """
+        formatted_forecast = []
+        
+        for entry in forecast_data:
+            try:
+                # Calculate score for this forecast entry
+                forecast_weather = {
+                    "temperature": entry.get("temperature"),
+                    "wind_speed": entry.get("wind_speed"),
+                    "wind_gust": entry.get("wind_gust", entry.get("wind_speed", 0) * 1.5),
+                    "pressure": entry.get("pressure"),
+                    "precipitation": entry.get("precipitation", 0),
+                    "cloud_cover": entry.get("cloud_cover", 0),
+                    "humidity": entry.get("humidity", 50),
+                }
+                
+                # Calculate component scores
+                component_scores = self._calculate_base_score(
+                    forecast_weather, astro_data, None, None, entry.get("datetime")
+                )
+                
+                # Calculate final score
+                weights = self._get_factor_weights()
+                score = self._weighted_average(component_scores, weights)
+                
+                # Normalize component scores for frontend (0-100)
+                normalized_scores = {
+                    key: round(value * 10, 1) for key, value in component_scores.items()
+                }
+                
+                formatted_forecast.append({
+                    "datetime": entry.get("datetime"),
+                    "score": round(score, 1),
+                    "temperature": entry.get("temperature"),
+                    "wind_speed": entry.get("wind_speed"),
+                    "pressure": entry.get("pressure"),
+                    "component_scores": normalized_scores,
+                })
+            except Exception as e:
+                _LOGGER.warning(f"Error formatting forecast entry: {e}")
+                continue
+        
+        return formatted_forecast
 
     async def calculate_forecast(
         self,
