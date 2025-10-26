@@ -4,7 +4,6 @@ from datetime import datetime
 from typing import Dict, Optional, List, Any
 
 from .base_scorer import BaseScorer
-from .data_formatter import DataFormatter
 from .const import TIME_PERIODS_FULL_DAY
 from .species_loader import SpeciesLoader
 
@@ -49,8 +48,6 @@ class FreshwaterFishingScorer(BaseScorer):
             species=[species_name],
             species_profiles=species_profiles
         )
-        
-        self.formatter = DataFormatter()
 
     def _calculate_base_score(
         self,
