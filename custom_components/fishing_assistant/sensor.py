@@ -66,8 +66,8 @@ async def _setup_freshwater_sensors(hass, config_entry, async_add_entities):
     species_loader = SpeciesLoader(hass)
     await species_loader.async_load_profiles()
 
-    # Initialize weather fetcher
-    weather_fetcher = WeatherFetcher(hass, lat, lon)
+    # Initialize weather fetcher with weather_entity parameter
+    weather_fetcher = WeatherFetcher(hass, lat, lon, weather_entity)
 
     for fish in fish_list:
         sensors.append(
@@ -104,10 +104,10 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
     # Create a location key based on coordinates for sensor naming consistency
     location_key = f"{name.lower().replace(' ', '_')}"
 
-    # Initialize data fetchers
+    # Initialize data fetchers with weather_entity parameter
     tide_proxy = None
     marine_fetcher = None
-    weather_fetcher = WeatherFetcher(hass, lat, lon)
+    weather_fetcher = WeatherFetcher(hass, lat, lon, weather_entity)
 
     if data.get(CONF_TIDE_MODE) == TIDE_MODE_PROXY:
         tide_proxy = TideProxy(hass, lat, lon)
@@ -286,7 +286,7 @@ class FishScoreSensor(SensorEntity):
             return
         
         try:
-            # Get current weather data from Met.no API (raw data)
+            # Get current weather data from HA weather entity (raw data)
             weather_data_raw = await self._weather_fetcher.get_weather_data()
             if not weather_data_raw:
                 _LOGGER.error("No weather data available for freshwater sensor")
