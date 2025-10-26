@@ -16,13 +16,7 @@ from .data_schema import (
     ComponentScores,
     ScoringResult,
 )
-from .data_formatter import (
-    format_weather_data,
-    format_marine_data,
-    format_tide_data,
-    format_astro_data,
-    format_scoring_result,
-)
+from .data_formatter import DataFormatter
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -95,33 +89,33 @@ class BaseScorer(ABC):
     
     def calculate_score(
         self,
-        weather: Dict[str, Any],
-        astro: Dict[str, Any],
-        tide: Optional[Dict[str, Any]] = None,
-        marine: Optional[Dict[str, Any]] = None,
+        weather_data: Dict[str, Any],
+        astro_data: Dict[str, Any],
+        tide_data: Optional[Dict[str, Any]] = None,
+        marine_data: Optional[Dict[str, Any]] = None,
         current_time: Optional[Any] = None,
     ) -> ScoringResult:
         """Calculate the fishing score based on conditions.
         
         Args:
-            weather: Raw weather data dictionary
-            astro: Raw astronomical data dictionary
-            tide: Optional raw tide data dictionary
-            marine: Optional raw marine data dictionary
+            weather_data: Raw weather data dictionary
+            astro_data: Raw astronomical data dictionary
+            tide_data: Optional raw tide data dictionary
+            marine_data: Optional raw marine data dictionary
             current_time: Optional datetime object for time-based scoring
             
         Returns:
             ScoringResult with score, breakdown, and component scores
         """
-        # Format input data
-        weather_data = format_weather_data(weather)
-        astro_data = format_astro_data(astro)
-        tide_data = format_tide_data(tide) if tide else None
-        marine_data = format_marine_data(marine) if marine else None
+        # Format input data using DataFormatter
+        weather = DataFormatter.format_weather_data(weather_data)
+        astro = DataFormatter.format_astro_data(astro_data)
+        tide = DataFormatter.format_tide_data(tide_data) if tide_data else None
+        marine = DataFormatter.format_marine_data(marine_data) if marine_data else None
         
         # Calculate component scores
         component_scores = self._calculate_base_score(
-            weather_data, astro_data, tide_data, marine_data, current_time
+            weather, astro, tide, marine, current_time
         )
         
         # Get weights and calculate weighted average
@@ -131,16 +125,19 @@ class BaseScorer(ABC):
         # Store for later retrieval
         self._component_scores = component_scores
         self._conditions_summary = self._format_conditions_text(
-            final_score, weather_data, component_scores
+            final_score, weather, component_scores
         )
         
         # Log details
         self._log_scoring_details(final_score, component_scores)
         
         # Return formatted result
-        return format_scoring_result(
-            final_score, self._conditions_summary, component_scores
-        )
+        return DataFormatter.format_score_result({
+            "score": final_score,
+            "conditions_summary": self._conditions_summary,
+            "component_scores": component_scores,
+            "breakdown": {}
+        })
     
     @abstractmethod
     def _score_temperature(self, temperature: float) -> float:
