@@ -10,7 +10,7 @@ This version:
 """
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional, List, Any
+from typing import Dict, Optional, Any
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -32,14 +32,7 @@ class WeatherFetcher:
     """Fetch weather data from Home Assistant weather entity or fallback to defaults."""
 
     def __init__(self, hass, latitude: float, longitude: float, weather_entity: Optional[str] = None):
-        """Initialize the weather fetcher.
-
-        Args:
-            hass: Home Assistant instance
-            latitude: Location latitude
-            longitude: Location longitude
-            weather_entity: Optional HA weather entity ID (e.g., 'weather.home')
-        """
+        """Initialize the weather fetcher."""
         self.hass = hass
         self.latitude = round(latitude, 4)
         self.longitude = round(longitude, 4)
@@ -48,17 +41,7 @@ class WeatherFetcher:
         self._cache_duration = timedelta(minutes=30)  # Cache for 30 minutes
 
     async def get_weather_data(self) -> Dict:
-        """Get current weather data.
-
-        Returns:
-            Dictionary with weather data:
-            - temperature: Celsius
-            - wind_speed: km/h
-            - wind_gust: km/h
-            - cloud_cover: 0-100
-            - precipitation_probability: 0-100
-            - pressure: hPa
-        """
+        """Get current weather data."""
         # Check cache first
         if self._cache_key in _GLOBAL_CACHE:
             cache_entry = _GLOBAL_CACHE[self._cache_key]
@@ -103,7 +86,10 @@ class WeatherFetcher:
                 forecast_list = attrs.get("forecast", [])
                 if isinstance(forecast_list, list) and len(forecast_list) > 0:
                     first = forecast_list[0] if isinstance(forecast_list[0], dict) else {}
-                    precip_prob = first.get("precipitation_probability", first.get("precipitation", first.get("precipitation_probability_percent", 0)) or 0)
+                    precip_prob = first.get(
+                        "precipitation_probability",
+                        first.get("precipitation", first.get("precipitation_probability_percent", 0)) or 0,
+                    )
             except Exception:
                 precip_prob = 0
 
