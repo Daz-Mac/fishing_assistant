@@ -4,7 +4,6 @@ from datetime import datetime, timedelta
 from typing import Dict, Optional, List, Tuple, Any
 
 from .base_scorer import BaseScorer
-from .data_formatter import DataFormatter
 from .const import (
     CONF_SPECIES_ID,
     CONF_HABITAT_PRESET,
@@ -36,7 +35,6 @@ class OceanFishingScorer(BaseScorer):
         """Initialize the scorer."""
         self.hass = hass
         self.config = config
-        self.formatter = DataFormatter()
         self.species_loader = SpeciesLoader(hass)
         self.species_profile = None
         self._initialized = False
@@ -591,4 +589,3 @@ class OceanFishingScorer(BaseScorer):
             return "caution", reasons
         else:
             return "safe", ["Conditions within safe limits"]
-        
