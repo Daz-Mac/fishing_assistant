@@ -4,6 +4,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
 from homeassistant.const import UnitOfLength, UnitOfSpeed, PERCENTAGE
 from homeassistant.util import dt as dt_util
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from datetime import datetime, timedelta, timezone, date, time
 import logging
 from typing import Any, Dict, List, Optional
@@ -265,7 +266,8 @@ async def _setup_freshwater_sensors(hass, config_entry, async_add_entities):
     use_open_meteo = data.get(CONF_USE_OPEN_METEO, True)
     open_meteo_adapter = None
     if use_open_meteo:
-        client = OpenMeteoClient()
+        session = async_get_clientsession(hass)
+        client = OpenMeteoClient(session=session)
         open_meteo_adapter = OpenMeteoAdapter(client, lat, lon, include_marine=False)
 
     species_loader = SpeciesLoader(hass)
@@ -315,7 +317,8 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
     use_open_meteo = data.get(CONF_USE_OPEN_METEO, True)
     open_meteo_adapter = None
     if use_open_meteo:
-        client = OpenMeteoClient()
+        session = async_get_clientsession(hass)
+        client = OpenMeteoClient(session=session)
         open_meteo_adapter = OpenMeteoAdapter(client, lat, lon, include_marine=data.get(CONF_MARINE_ENABLED, True))
 
     location_key = f"{name.lower().replace(' ', '_')}"

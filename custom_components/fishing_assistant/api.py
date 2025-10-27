@@ -149,7 +149,8 @@ class OpenMeteoClient:
 
         _LOGGER.debug("Open-Meteo request to %s params=%s", base_url, params)
         try:
-            async with session.get(base_url, params=params) as resp:
+            timeout = aiohttp.ClientTimeout(total=15)  # seconds; adjust if you want shorter/longer
+            async with session.get(base_url, params=params, timeout=timeout) as resp:
                 text = await resp.text()
                 if resp.status != 200:
                     _LOGGER.debug(
