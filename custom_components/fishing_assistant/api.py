@@ -19,29 +19,31 @@ Normalization contract (per hourly item):
     ...
 }
 
-The client is defensive: logs raw response keys, checks lengths, coerces numeric-like
-strings to numbers, normalizes times to UTC ISO strings ending with 'Z', and fills
-missing values with None.
+This version hardens parsing, improves logging, is defensive about missing keys,
+coerces numeric-like strings to numbers, normalizes times to UTC ISO strings
+(with 'Z' suffix), and ensures predictable list shapes for downstream consumers.
 """
+
+from __future__ import annotations
 
 import logging
 import math
 from datetime import datetime, timezone
-from typing import List, Dict, Any, Optional, Iterable
+from typing import Any, Dict, Iterable, List, Optional
 
 import aiohttp
 from homeassistant.util import dt as dt_util
 
-from .const import OPEN_METEO_URL, OPEN_METEO_MARINE_URL
+from .const import OPEN_METEO_MARINE_URL, OPEN_METEO_URL
 
 _LOGGER = logging.getLogger(__name__)
 
 
 class OpenMeteoClient:
-    """Client to fetch and normalize Open-Meteo data."""
+    """Async client to fetch and normalize Open-Meteo data."""
 
-    def __init__(self, session: Optional[aiohttp.ClientSession] = None):
-        # If a session is provided (e.g. Home Assistant's), we won't close it.
+    def __init__(self, session: Optional[aiohttp.ClientSession] = None) -> None:
+        # If a session is supplied, we won't close it.
         self._session = session
 
     async def fetch_hourly_forecast(
@@ -57,21 +59,20 @@ class OpenMeteoClient:
 
         Returns a list of dicts (one per hour) normalized per contract.
         """
-        # Default hourly variables useful for scoring
         if hourly_vars is None:
-            hourly_vars = [
+            hourly_vars = (
                 "temperature_2m",
                 "cloudcover",
                 "precipitation",
                 "wind_speed_10m",
                 "pressure_msl",
-            ]
+            )
         if marine_vars is None:
-            marine_vars = [
+            marine_vars = (
                 "wave_height",
                 "wave_period",
                 "sea_surface_temperature",
-            ]
+            )
 
         _LOGGER.debug(
             "Fetching Open-Meteo weather: lat=%s lon=%s vars=%s days=%s",
@@ -101,29 +102,23 @@ class OpenMeteoClient:
                     forecast_days,
                     is_marine=True,
                 )
-            except Exception as exc:  # keep defensive: don't break whole flow due to marine failure
-                _LOGGER.debug("Marine endpoint fetch failed: %s; will attempt to merge whatever is available", exc)
+            except Exception as exc:  # defensive: don't break flow due to marine failure
+                _LOGGER.debug(
+                    "Open-Meteo marine fetch failed; proceeding without marine. Error: %s", exc
+                )
 
-        # Normalize / merge into hourly list
         normalized = normalize_hourly_merged(weather_data, marine_data)
 
-        # Debug logs
+        # Additional debug (non-fatal)
         try:
-            if isinstance(weather_data, dict):
-                _LOGGER.debug("Open-Meteo raw keys (weather): %s", list(weather_data.keys()))
-            else:
-                _LOGGER.debug("Open-Meteo weather response type: %s", type(weather_data))
-
-            if marine_data:
-                if isinstance(marine_data, dict):
-                    _LOGGER.debug("Open-Meteo raw keys (marine): %s", list(marine_data.keys()))
-                else:
-                    _LOGGER.debug("Open-Meteo marine response type: %s", type(marine_data))
-
-            _LOGGER.debug("Normalized forecast count=%d; first_items=%s", len(normalized), normalized[:3])
+            _LOGGER.debug(
+                "Open-Meteo normalized forecast count=%d; first_items=%s",
+                len(normalized),
+                normalized[:3],
+            )
         except Exception:
-            # Never fail because of logging
-            pass
+            # Never raise from logging
+            _LOGGER.debug("Failed to log normalized forecast preview")
 
         return normalized
 
@@ -136,11 +131,10 @@ class OpenMeteoClient:
         forecast_days: int,
         is_marine: bool = False,
     ) -> Dict[str, Any]:
-        """Perform the HTTP GET to Open-Meteo and return parsed JSON.
+        """Perform HTTP GET to Open-Meteo and return parsed JSON.
 
-        Raises on non-200 responses.
-
-        NOTE: This function is defensive and logs request/response metadata to help debugging.
+        Raises RuntimeError for non-200 responses or JSON parse failure.
+        This method is defensive and logs request/response metadata for debugging.
         """
         params = {
             "latitude": latitude,
@@ -158,22 +152,30 @@ class OpenMeteoClient:
             async with session.get(base_url, params=params) as resp:
                 text = await resp.text()
                 if resp.status != 200:
-                    _LOGGER.debug("Open-Meteo non-200 response: %s body=%s", resp.status, text)
-                    raise Exception(f"Open-Meteo returned status {resp.status}: {text}")
+                    _LOGGER.debug(
+                        "Open-Meteo non-200 response: status=%s body=%s", resp.status, text
+                    )
+                    raise RuntimeError(f"Open-Meteo returned status {resp.status}")
+
                 try:
-                    json_data = await resp.json()
-                    _LOGGER.debug("Open-Meteo response keys: %s", list(json_data.keys()) if isinstance(json_data, dict) else type(json_data))
+                    # tolerate content-types that may not be exact JSON MIME
+                    json_data = await resp.json(content_type=None)
+                    if not isinstance(json_data, dict):
+                        _LOGGER.debug("Open-Meteo returned non-dict JSON: %s", type(json_data))
                     return json_data
                 except Exception as exc:
-                    _LOGGER.debug("Failed to parse Open-Meteo JSON: %s; raw body: %s", exc, text)
+                    _LOGGER.debug(
+                        "Failed to parse Open-Meteo JSON: %s; raw body (truncated)=%s",
+                        exc,
+                        (text or "")[:1000],
+                    )
                     raise
         finally:
             if close_session:
-                # Close only the client we created
                 try:
                     await session.close()
                 except Exception:
-                    pass
+                    _LOGGER.debug("Error closing temporary aiohttp session", exc_info=True)
 
 
 # -----------------------------
@@ -182,187 +184,185 @@ class OpenMeteoClient:
 
 
 def _to_utc_iso(dt_val: Any) -> Optional[str]:
-    """Parse a datetime-like value (string or datetime) and return a UTC ISO string with Z.
+    """Parse a datetime-like value and return UTC ISO string with 'Z' suffix.
 
-    Accepts Home Assistant's dt_util.parse_datetime inputs, naive datetimes (assumed UTC),
-    or ISO strings. Returns None on failure.
+    Accepts datetime objects or strings parsable by Home Assistant's dt_util.parse_datetime.
+    If parsing fails returns None.
+
+    Note: dt_util.parse_datetime may return a naive datetime interpreted as local time.
+    Here we treat naive datetimes as UTC to avoid accidental timezone shifts in normalized
+    output (this matches upstream use in this integration). If you prefer local->UTC
+    conversion, adjust accordingly.
     """
     if dt_val is None:
         return None
     try:
-        if isinstance(dt_val, str):
-            parsed = dt_util.parse_datetime(dt_val)
-        elif isinstance(dt_val, datetime):
+        if isinstance(dt_val, datetime):
             parsed = dt_val
         else:
-            # Try converting other types to string and parse
             parsed = dt_util.parse_datetime(str(dt_val))
-
         if parsed is None:
             return None
 
-        # Ensure timezone-aware in UTC
+        # Treat naive datetimes as UTC (explicit) to keep normalization deterministic
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=timezone.utc)
         parsed_utc = parsed.astimezone(timezone.utc)
-        # Use Z suffix for compactness
         return parsed_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
     except Exception:
+        _LOGGER.debug("Failed to parse/normalize time value: %s", dt_val, exc_info=True)
         return None
 
 
 def _coerce_numeric(value: Any) -> Any:
-    """Try to coerce numeric-like strings to numbers; leave booleans as-is.
+    """Coerce numeric-like values to int/float; leave booleans alone.
 
-    Returns float for decimal-like values, int if integer-like, or original value on failure.
+    Returns:
+    - int for integer-like values
+    - float for decimal-like values
+    - None for empty/"nan"/NaN
+    - original value for non-numeric strings
     """
     if value is None:
         return None
-    # Preserve booleans
     if isinstance(value, bool):
         return value
-    # Already numeric
     if isinstance(value, (int, float)):
-        # Normalize NaN to None
         try:
             if isinstance(value, float) and math.isnan(value):
                 return None
         except Exception:
             pass
         return value
-    # Strings that represent numbers
     if isinstance(value, str):
         s = value.strip()
         if s == "":
             return None
+        if s.lower() == "nan":
+            return None
+        # Try integer-ish
         try:
-            # Try int first
             if s.isdigit() or (s.startswith("-") and s[1:].isdigit()):
                 return int(s)
-            # Try float
             f = float(s)
             if math.isnan(f):
                 return None
-            # If float is actually integer (e.g. "2.0"), return int
-            if float(int(f)) == f:
+            # Prefer int when the float is integral
+            if abs(f - int(f)) < 1e-9:
                 return int(f)
             return f
         except Exception:
             return value
-    # fallback: return as-is
+    # Fallback: return original
     return value
 
 
 def normalize_hourly_response(raw: Optional[Dict[str, Any]]) -> Dict[str, List[Any]]:
-    """Return the 'hourly' dict from Open-Meteo response or an empty dict.
+    """Return the 'hourly' dict from an Open-Meteo response in a safe form.
 
-    The function returns a dict mapping variable->list, with special handling for 'time'.
-    Ensures that all returned values are lists (or missing).
+    Ensures every returned key maps to a list. Scalars are converted to single-element lists.
+    Returns an empty dict for invalid input.
     """
     if not raw or not isinstance(raw, dict):
         return {}
     hourly = raw.get("hourly") or {}
-
-    result: Dict[str, List[Any]] = {}
+    out: Dict[str, List[Any]] = {}
     for k, v in hourly.items():
-        # Only keep serializable list-like arrays or scalar values (converted to single-element list)
         if isinstance(v, list):
-            result[k] = v
+            out[k] = v
         else:
-            # Some variants may include scalars (rare) - convert to single-element list for consistent indexing
-            result[k] = [v]
-    return result
+            # Convert scalars -> single-element list for consistent indexing
+            out[k] = [v]
+    return out
 
 
-def normalize_hourly_merged(weather_raw: Optional[Dict[str, Any]], marine_raw: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    """Merge weather and marine hourly arrays into a normalized list of dicts.
+def normalize_hourly_merged(
+    weather_raw: Optional[Dict[str, Any]], marine_raw: Optional[Dict[str, Any]] = None
+) -> List[Dict[str, Any]]:
+    """Merge weather and marine hourly arrays from Open-Meteo into a normalized list.
 
-    Uses weather_raw.hourly.time as the canonical timeline when available. If not,
-    falls back to marine times or best-effort.
-
-    Returns a list of dicts, where numeric-like strings are coerced to numbers,
-    empty values and NaNs become None, and times are normalized to UTC ISO strings.
+    - Uses weather_raw.hourly.time as canonical timeline where available, otherwise marine time.
+    - Coerces numeric-like strings to numbers.
+    - Converts empty/"nan"/NaN to None.
+    - Normalizes times to UTC ISO strings with 'Z' suffix.
     """
     weather_hourly = normalize_hourly_response(weather_raw)
     marine_hourly = normalize_hourly_response(marine_raw)
 
-    # Determine canonical times (lists). These are lists of original time values.
+    # Determine canonical times
     times = weather_hourly.get("time") or marine_hourly.get("time") or []
 
-    # Normalize times to UTC ISO strings. Keep same length as times.
+    # Normalize times to UTC ISO strings preserving index alignment
     times_iso: List[Optional[str]] = [_to_utc_iso(t) for t in times]
-
-    # If times present, expected length is len(times_iso). Otherwise zero.
     expected_len = len(times_iso)
 
-    # Collect union of variable keys (exclude 'time')
+    # Collect keys excluding 'time'
     keys = set(weather_hourly.keys()) | set(marine_hourly.keys())
     keys.discard("time")
 
-    # If times list is empty but we have some scalar fields, return a single snapshot
+    # If we have no timeline but some scalar fields, return a single snapshot with first values
     if expected_len == 0:
-        item: Dict[str, Any] = {"time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        item: Dict[str, Any] = {"time": now_iso}
         for k in keys:
             vals = weather_hourly.get(k) or marine_hourly.get(k)
-            # vals should be a list per normalize_hourly_response; pick first meaningful element
             chosen = None
             if isinstance(vals, list) and len(vals) > 0:
                 chosen = vals[0]
             else:
-                # empty list or None -> None
                 chosen = None
-            # Coerce numeric strings / normalize NaN/empty
             chosen = _coerce_numeric(chosen)
             item[k] = chosen
         return [item]
 
-    # Pre-check lengths and log mismatches for debugging
+    # Log any length mismatches (non-fatal): helpful for debugging inconsistent upstream data
     for src_name, arr in (("weather", weather_hourly), ("marine", marine_hourly)):
         for k, v in arr.items():
             if k == "time":
                 continue
             if isinstance(v, list) and len(v) != expected_len:
                 _LOGGER.debug(
-                    "Variable '%s' from %s has length %d but expected %d (times length).",
+                    "Open-Meteo variable '%s' from %s has length %d but expected %d (times length).",
                     k,
                     src_name,
                     len(v),
                     expected_len,
                 )
 
-    # Build final list of items
+    # Build normalized list
     normalized: List[Dict[str, Any]] = []
     for idx in range(expected_len):
         t_iso = times_iso[idx] if idx < len(times_iso) else None
-        # If a particular time couldn't be parsed, log once (debug)
         if t_iso is None:
-            _LOGGER.debug("Unparseable time at index %d (raw=%s)", idx, times[idx] if idx < len(times) else None)
+            _LOGGER.debug(
+                "Unparseable/missing time at index %d raw=%s",
+                idx,
+                times[idx] if idx < len(times) else None,
+            )
 
         item: Dict[str, Any] = {"time": t_iso}
         for k in keys:
-            val = None
+            val: Any = None
 
-            # Prefer weather arrays, fallback to marine arrays
+            # Prefer weather source
             src_arr = weather_hourly.get(k)
             if isinstance(src_arr, list):
-                if idx < len(src_arr):
-                    val = src_arr[idx]
-                else:
-                    val = None
+                val = src_arr[idx] if idx < len(src_arr) else None
             else:
-                # Not expected, but handle gracefully by broadcasting scalar
-                val = src_arr if src_arr is not None else None
+                # Scalar -> broadcast
+                if src_arr is not None:
+                    val = src_arr
 
+            # Fallback to marine source
             if val is None:
                 src_arr2 = marine_hourly.get(k)
                 if isinstance(src_arr2, list):
-                    if idx < len(src_arr2):
-                        val = src_arr2[idx]
+                    val = src_arr2[idx] if idx < len(src_arr2) else None
                 else:
                     if src_arr2 is not None:
                         val = src_arr2
 
-            # Normalize sentinel values: empty string, "nan" string, float('nan')
+            # Normalize sentinel values
             if isinstance(val, str) and val.strip() == "":
                 val = None
             if isinstance(val, str) and val.strip().lower() == "nan":
@@ -374,7 +374,7 @@ def normalize_hourly_merged(weather_raw: Optional[Dict[str, Any]], marine_raw: O
                 except Exception:
                     pass
 
-            # Coerce numeric-like strings to numeric types
+            # Coerce numeric-like strings -> numbers
             val = _coerce_numeric(val)
 
             item[k] = val
