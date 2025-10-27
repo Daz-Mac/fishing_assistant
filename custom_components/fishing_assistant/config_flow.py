@@ -721,8 +721,81 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_ocean_time_periods(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Configure time period monitoring preference."""
         if user_input is not None:
-            self.ocean_config.update(user_input)
-            return await self.async_step_ocean_thresholds()
+            _LOGGER.debug("async_step_ocean_time_periods - received user_input: %s", user_input)
+            errors = {}
+            try:
+                # Basic validation: ensure time_periods is present and valid
+                tp = user_input.get(CONF_TIME_PERIODS)
+                valid = {TIME_PERIODS_FULL_DAY, TIME_PERIODS_DAWN_DUSK}
+                if tp is None:
+                    errors["base"] = "missing_time_periods"
+                elif tp not in valid:
+                    _LOGGER.warning("Invalid time_periods submitted: %s (valid=%s)", tp, valid)
+                    errors["base"] = "invalid_time_periods"
+
+                if errors:
+                    return self.async_show_form(
+                        step_id="ocean_time_periods",
+                        data_schema=vol.Schema({
+                            vol.Required(
+                                CONF_TIME_PERIODS,
+                                default=self.ocean_config.get(CONF_TIME_PERIODS, TIME_PERIODS_FULL_DAY),
+                            ): selector.SelectSelector(
+                                selector.SelectSelectorConfig(
+                                    options=[
+                                        {
+                                            "value": TIME_PERIODS_FULL_DAY,
+                                            "label": "🌅 Full Day (4 periods: Morning, Afternoon, Evening, Night)"
+                                        },
+                                        {
+                                            "value": TIME_PERIODS_DAWN_DUSK,
+                                            "label": "🌄 Dawn & Dusk Only (Prime fishing times: ±1hr sunrise/sunset)"
+                                        },
+                                    ],
+                                    mode="list",
+                                )
+                            ),
+                        }),
+                        errors=errors,
+                        description_placeholders={
+                            "info": "Choose which time periods to monitor. Dawn & Dusk focuses on the most productive fishing times."
+                        }
+                    )
+
+                # Store and continue
+                self.ocean_config.update(user_input)
+                return await self.async_step_ocean_thresholds()
+
+            except Exception as exc:
+                _LOGGER.exception("Unhandled exception in async_step_ocean_time_periods: %s", exc)
+                # Re-show the form with a general error while preserving current defaults
+                return self.async_show_form(
+                    step_id="ocean_time_periods",
+                    data_schema=vol.Schema({
+                        vol.Required(
+                            CONF_TIME_PERIODS,
+                            default=self.ocean_config.get(CONF_TIME_PERIODS, TIME_PERIODS_FULL_DAY),
+                        ): selector.SelectSelector(
+                            selector.SelectSelectorConfig(
+                                options=[
+                                    {
+                                        "value": TIME_PERIODS_FULL_DAY,
+                                        "label": "🌅 Full Day (4 periods: Morning, Afternoon, Evening, Night)"
+                                    },
+                                    {
+                                        "value": TIME_PERIODS_DAWN_DUSK,
+                                        "label": "🌄 Dawn & Dusk Only (Prime fishing times: ±1hr sunrise/sunset)"
+                                    },
+                                ],
+                                mode="list",
+                            )
+                        ),
+                    }),
+                    errors={"base": "unknown"},
+                    description_placeholders={
+                        "info": "Choose which time periods to monitor. Dawn & Dusk focuses on the most productive fishing times."
+                    }
+                )
 
         return self.async_show_form(
             step_id="ocean_time_periods",
