@@ -538,8 +538,9 @@ class WeatherFetcher:
                         temp = _safe_float(val.get("temperature") or val.get("temp") or val.get("temperature_2m"), DEFAULT_WEATHER_VALUES["temperature"])
                         wind = _safe_float(val.get("wind_speed") or val.get("wind") or val.get("wind_speed_10m"), DEFAULT_WEATHER_VALUES["wind_speed"])
                         gust = _safe_float(val.get("wind_gust") or val.get("gust") or wind, DEFAULT_WEATHER_VALUES["wind_gust"])
-                        cloud = _safe_int(val.get("cloud_cover") or val.get("clouds") or DEFAULT_WEATHER_VALUES["cloud_cover"])
-                        pop = _safe_int(val.get("precipitation_probability") or val.get("pop") or val.get("precipitation") or DEFAULT_WEATHER_VALUES["precipitation_probability"])
+                        # FIX: pass default as second argument to _safe_int
+                        cloud = _safe_int(val.get("cloud_cover") or val.get("clouds"), DEFAULT_WEATHER_VALUES["cloud_cover"])
+                        pop = _safe_int(val.get("precipitation_probability") or val.get("pop") or val.get("precipitation"), DEFAULT_WEATHER_VALUES["precipitation_probability"])
                         pressure = _safe_float(val.get("pressure") or val.get("pressure_msl"), DEFAULT_WEATHER_VALUES["pressure"])
                         normalized[date_key] = {
                             "temperature": temp,
@@ -558,7 +559,7 @@ class WeatherFetcher:
             if isinstance(result, list):
                 # If items look like hourly (have 'time' with T) aggregate to daily
                 # If items look daily (already grouped by date), try the list normalizer
-                # Heuristic: if first item contains 'time' with 'T' or hour component -> treat as hourly
+                # Heuristic: if first item contains 'time' treat as hourly
                 first = next((it for it in result if isinstance(it, dict)), None)
                 if first:
                     if "time" in first or "datetime" in first or "timestamp" in first:
