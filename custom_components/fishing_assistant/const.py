@@ -105,16 +105,14 @@ HABITAT_PRESETS = {
         "wind_weight": 0.25,
         "safety_critical": True,
     },
-    # Freshwater body types
+    # Freshwater body types (standardized to use 'max_wave_height')
     BODY_TYPE_LAKE: {
         "name": "Lake",
         "description": "Open lake fishing",
         "max_wind_speed": 25,  # km/h
         "max_gust_speed": 40,  # km/h (estimated from wind)
-        "max_wave": 0.5,  # meters (estimated from wind)
+        "max_wave_height": 0.5,  # meters (typical lake chop)
         "wind_weight": 0.3,
-        "max_wave_height": 0.5,  # meters (alias for max_wave)
-
         "safety_critical": True,
     },
     BODY_TYPE_RIVER: {
@@ -122,9 +120,7 @@ HABITAT_PRESETS = {
         "description": "River or stream fishing",
         "max_wind_speed": 30,  # km/h
         "max_gust_speed": 45,  # km/h (estimated from wind)
-        "max_wave_height": 0.3,  # meters (alias for max_wave)
-
-        "max_wave": 0.3,  # meters (minimal waves in rivers)
+        "max_wave_height": 0.3,  # meters (minimal waves in rivers)
         "wind_weight": 0.2,
         "safety_critical": False,
     },
@@ -133,8 +129,7 @@ HABITAT_PRESETS = {
         "description": "Small pond or protected water",
         "max_wind_speed": 35,  # km/h
         "max_gust_speed": 50,  # km/h (estimated from wind)
-        "max_wave": 0.2,  # meters (minimal waves in ponds)
-        "max_wave_height": 0.2,  # meters (alias for max_wave)
+        "max_wave_height": 0.2,  # meters (minimal waves in ponds)
         "wind_weight": 0.1,
         "safety_critical": False,
     },
