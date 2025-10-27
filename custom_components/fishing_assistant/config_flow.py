@@ -269,9 +269,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         return vol.Schema({
             vol.Required(CONF_USE_OPEN_METEO, default=default_use_open): selector.BooleanSelector(
-                selector.BooleanSelectorConfig(
-                    default=default_use_open,
-                )
+                selector.BooleanSelectorConfig()
             ),
             vol.Optional(CONF_WEATHER_ENTITY, default=default_weather): selector.SelectSelector(
                 selector.SelectSelectorConfig(
@@ -750,9 +748,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         return vol.Schema({
             vol.Required(CONF_USE_OPEN_METEO, default=default_use_open): selector.BooleanSelector(
-                selector.BooleanSelectorConfig(
-                    default=default_use_open,
-                )
+                selector.BooleanSelectorConfig()
             ),
             vol.Optional(CONF_WEATHER_ENTITY, default=default_weather): selector.SelectSelector(
                 selector.SelectSelectorConfig(
@@ -1201,9 +1197,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     CONF_USE_OPEN_METEO,
                     default=self.config_entry.data.get(CONF_USE_OPEN_METEO, True),
                 ): selector.BooleanSelector(
-                    selector.BooleanSelectorConfig(
-                        default=self.config_entry.data.get(CONF_USE_OPEN_METEO, True),
-                    )
+                    selector.BooleanSelectorConfig()
                 ),
             }),
         )
@@ -1264,9 +1258,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     CONF_USE_OPEN_METEO,
                     default=self.config_entry.data.get(CONF_USE_OPEN_METEO, True),
                 ): selector.BooleanSelector(
-                    selector.BooleanSelectorConfig(
-                        default=self.config_entry.data.get(CONF_USE_OPEN_METEO, True),
-                    )
+                    selector.BooleanSelectorConfig()
                 ),
             }),
         )
