@@ -1,33 +1,123 @@
 {
+  "title": "Fishing Assistant",
+  "config": {
     "title": "Fishing Assistant",
-    "config": {
-      "title": "Fishing Assistant",
-      "step": {
-        "user": {
-          "title": "Add Fishing Location",
-          "description": "Set up a fishing location with target species and water body type.",
-          "data": {
-            "name": "Location name",
-            "latitude": "Latitude",
-            "longitude": "Longitude",
-            "fish": "Target species",
-            "body_type": "Body type"
-          }
+    "step": {
+      "user": {
+        "title": "Add Fishing Location",
+        "description": "Set up a fishing location with target species and water body type.",
+        "data": {
+          "name": "Location name",
+          "latitude": "Latitude",
+          "longitude": "Longitude",
+          "fish": "Target species",
+          "body_type": "Body type"
         }
       },
-      "abort": {
-        "already_configured": "This location is already configured"
+      "ocean_habitat": {
+        "title": "Ocean - Habitat",
+        "description": "Select a habitat preset that best matches your fishing spot.",
+        "data": {
+          "habitat_preset": "Habitat preset"
+        },
+        "description_placeholders": {
+          "habitat_preset": "Choose the preset that most closely matches the site (e.g. rocky point, sandy beach)"
+        }
+      },
+      "ocean_time_periods": {
+        "title": "Ocean - Time Periods",
+        "description": "Select time periods when you want fishing windows evaluated.",
+        "data": {
+          "time_periods": "Time period"
+        }
+      },
+      "ocean_weather": {
+        "title": "Ocean - Weather",
+        "description": "Choose whether to use the built-in Open-Meteo provider or a Home Assistant weather entity.",
+        "data": {
+          "weather_provider": "Weather provider",
+          "weather_entity": "Weather entity (optional)"
+        },
+        "description_placeholders": {
+          "weather_entity": "Pick a Home Assistant weather entity, or leave blank to use Open-Meteo"
+        }
+      },
+      "ocean_thresholds": {
+        "title": "Ocean - Thresholds",
+        "description": "Set thresholds used to evaluate good fishing conditions.",
+        "data": {
+          "max_wind_kph": "Max wind (kph)",
+          "max_wave_m": "Max wave height (m)",
+          "min_temp_c": "Minimum temperature (°C)"
+        }
+      },
+      "confirm": {
+        "title": "Confirm",
+        "description": "Review and confirm the fishing location settings.",
+        "data": {}
       }
     },
-    "options": {
-      "step": {
-        "init": {
-          "title": "Fishing Assistant Options",
-          "data": {
-            "fish": "Target species",
-            "body_type": "Body type"
-          }
+    "abort": {
+      "already_configured": "This location is already configured",
+      "user_cancelled": "Configuration cancelled"
+    },
+    "error": {
+      "invalid_latitude_longitude": "Latitude and longitude must be valid numbers.",
+      "missing_required": "A required field is missing. Please check your selections.",
+      "invalid_weather_entity": "Selected weather entity is not a valid weather entity."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Fishing Assistant Options",
+        "data": {
+          "fish": "Target species",
+          "body_type": "Body type"
         }
       }
     }
+  },
+  "common": {
+    "yes": "Yes",
+    "no": "No",
+    "optional": "Optional"
+  },
+  "choices": {
+    "habitat_presets": {
+      "rocky_point": "Rocky point",
+      "sandy_beach": "Sandy beach",
+      "kelp_forest": "Kelp forest",
+      "open_water": "Open water",
+      "estuary": "Estuary",
+      "pier": "Pier",
+      "reef": "Reef"
+    },
+    "time_periods": {
+      "full_day": "Full day",
+      "morning": "Morning",
+      "afternoon": "Afternoon",
+      "evening": "Evening",
+      "night": "Night"
+    },
+    "weather_providers": {
+      "open_meteo": "Open-Meteo (built-in)",
+      "home_assistant": "Home Assistant weather entity"
+    },
+    "boolean": {
+      "true": "Yes",
+      "false": "No"
+    }
+  },
+  "ui": {
+    "labels": {
+      "habitat_preset": "Habitat",
+      "time_periods": "When to evaluate",
+      "weather_provider": "Weather source",
+      "weather_entity": "HA weather entity"
+    },
+    "placeholders": {
+      "select_none": "None / use built-in provider"
+    }
   }
+}
