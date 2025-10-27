@@ -1,5 +1,6 @@
 DOMAIN = "fishing_assistant"
 DEFAULT_NAME = "Fishing Assistant"
+CONF_USE_OPEN_METEO = "use_open_meteo"
 
 # ============================================================================
 # OCEAN MODE CONSTANTS (additions for ocean/shore fishing)
