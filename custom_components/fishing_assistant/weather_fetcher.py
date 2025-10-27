@@ -524,6 +524,7 @@ class WeatherFetcher:
                 "cloud_cover": int(float(entry.get("cloud_cover", DEFAULT_WEATHER_VALUES["cloud_cover"]))),
                 "precipitation_probability": int(float(entry.get("precipitation_probability", DEFAULT_WEATHER_VALUES["precipitation_probability"]))),
                 "pressure": float(entry.get("pressure", DEFAULT_WEATHER_VALUES["pressure"])),
+
             }
         return final
 
