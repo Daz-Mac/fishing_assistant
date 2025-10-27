@@ -634,8 +634,50 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_ocean_habitat(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Configure habitat."""
         if user_input is not None:
-            self.ocean_config.update(user_input)
-            return await self.async_step_ocean_weather()
+            _LOGGER.debug(
+                "async_step_ocean_habitat - received user_input: %s (types: %s)",
+                user_input,
+                {k: type(v).__name__ for k, v in user_input.items()}
+            )
+            try:
+                # Defensive extraction and validation of habitat preset
+                raw_hp = user_input.get(CONF_HABITAT_PRESET, "")
+                # Coerce to str (selector sometimes returns enums/other types in edge cases)
+                habitat_preset = str(raw_hp).strip() if raw_hp is not None else ""
+                if not habitat_preset or habitat_preset not in HABITAT_PRESETS:
+                    _LOGGER.warning(
+                        "Invalid or missing habitat_preset submitted: %s. Falling back to default: %s",
+                        habitat_preset, HABITAT_ROCKY_POINT
+                    )
+                    habitat_preset = HABITAT_ROCKY_POINT
+
+                # Store safe value
+                self.ocean_config[CONF_HABITAT_PRESET] = habitat_preset
+
+                return await self.async_step_ocean_weather()
+            except Exception as exc:
+                _LOGGER.exception("Unhandled exception in async_step_ocean_habitat: %s", exc)
+                # Re-show the form with a general error so the user can retry
+                return self.async_show_form(
+                    step_id="ocean_habitat",
+                    data_schema=vol.Schema({
+                        vol.Required(
+                            CONF_HABITAT_PRESET,
+                            default=HABITAT_ROCKY_POINT,
+                        ): selector.SelectSelector(
+                            selector.SelectSelectorConfig(
+                                options=[
+                                    {"value": "open_beach", "label": "🏖️ Open Sandy Beach"},
+                                    {"value": "rocky_point", "label": "🪨 Rocky Point/Jetty"},
+                                    {"value": "harbour", "label": "⚓ Harbour/Pier"},
+                                    {"value": "reef", "label": "🪸 Offshore Reef"},
+                                ],
+                                mode="list",
+                            )
+                        ),
+                    }),
+                    errors={"base": "unknown"},
+                )
 
         return self.async_show_form(
             step_id="ocean_habitat",
