@@ -37,6 +37,8 @@ from .const import (
     HABITAT_PRESETS,
     TIME_PERIODS_FULL_DAY,
     TIME_PERIODS_DAWN_DUSK,
+    DEFAULT_NAME,
+    HABITAT_ROCKY_POINT,
 )
 from .species_loader import SpeciesLoader
 
@@ -356,7 +358,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self.freshwater_config[CONF_USE_OPEN_METEO] = True
 
         return self.async_create_entry(
-            title=self.freshwater_config[CONF_NAME],
+            title=self.freshwater_config.get(CONF_NAME, DEFAULT_NAME),
             data=self.freshwater_config,
         )
 
@@ -404,7 +406,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             )
 
         return self.async_create_entry(
-            title=user_input[CONF_NAME],
+            title=user_input.get(CONF_NAME, DEFAULT_NAME),
             data=user_input,
         )
 
@@ -640,7 +642,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema({
                 vol.Required(
                     CONF_HABITAT_PRESET,
-                    default="rocky_point",
+                    default=HABITAT_ROCKY_POINT,
                 ): selector.SelectSelector(
                     selector.SelectSelectorConfig(
                         options=[
@@ -827,43 +829,199 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_ocean_thresholds(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Configure safety thresholds."""
         if user_input is not None:
-            # Build final config
-            final_config = {
-                CONF_MODE: MODE_OCEAN,
-                CONF_NAME: self.ocean_config[CONF_NAME],
-                CONF_LATITUDE: self.ocean_config[CONF_LATITUDE],
-                CONF_LONGITUDE: self.ocean_config[CONF_LONGITUDE],
-                CONF_SPECIES_ID: self.ocean_config.get(CONF_SPECIES_ID, "general_mixed"),
-                CONF_SPECIES_REGION: self.ocean_config.get(CONF_SPECIES_REGION, "global"),
-                CONF_HABITAT_PRESET: self.ocean_config[CONF_HABITAT_PRESET],
-                CONF_TIME_PERIODS: self.ocean_config.get(CONF_TIME_PERIODS, TIME_PERIODS_FULL_DAY),
-                CONF_AUTO_APPLY_THRESHOLDS: False,  # Always show thresholds
-                CONF_TIDE_MODE: TIDE_MODE_PROXY,  # Always use proxy
-                CONF_MARINE_ENABLED: True,  # Always enabled
-                CONF_WEATHER_ENTITY: self.ocean_config.get(CONF_WEATHER_ENTITY),
-                CONF_USE_OPEN_METEO: self.ocean_config.get(CONF_USE_OPEN_METEO, True),
-                CONF_THRESHOLDS: {
-                    "max_wind_speed": user_input["max_wind_speed"],
-                    "max_gust_speed": user_input["max_gust_speed"],
-                    "max_wave_height": user_input["max_wave_height"],
-                    "min_temperature": user_input["min_temperature"],
-                    "max_temperature": user_input["max_temperature"],
-                },
-            }
+            # Defensive: ensure required previous keys exist and coerce/validate types
+            try:
+                # Name
+                name = self.ocean_config.get(CONF_NAME) or DEFAULT_NAME
 
-            # Add timezone and elevation
-            final_config[CONF_TIMEZONE] = str(self.hass.config.time_zone)
-            final_config[CONF_ELEVATION] = self.hass.config.elevation
+                # Latitude / Longitude (coerce to float; if missing, default to HA config coords)
+                try:
+                    lat_raw = self.ocean_config.get(CONF_LATITUDE, self.hass.config.latitude)
+                    latitude = float(lat_raw)
+                except Exception:
+                    _LOGGER.warning("Invalid latitude in ocean_config: %s; using HA default", lat_raw)
+                    latitude = float(self.hass.config.latitude)
 
-            return self.async_create_entry(
-                title=self.ocean_config[CONF_NAME],
-                data=final_config,
-            )
+                try:
+                    lon_raw = self.ocean_config.get(CONF_LONGITUDE, self.hass.config.longitude)
+                    longitude = float(lon_raw)
+                except Exception:
+                    _LOGGER.warning("Invalid longitude in ocean_config: %s; using HA default", lon_raw)
+                    longitude = float(self.hass.config.longitude)
 
-        # Get defaults from habitat preset
+                habitat_preset = self.ocean_config.get(CONF_HABITAT_PRESET, HABITAT_ROCKY_POINT)
+
+                final_config = {
+                    CONF_MODE: MODE_OCEAN,
+                    CONF_NAME: name,
+                    CONF_LATITUDE: latitude,
+                    CONF_LONGITUDE: longitude,
+                    CONF_SPECIES_ID: self.ocean_config.get(CONF_SPECIES_ID, "general_mixed"),
+                    CONF_SPECIES_REGION: self.ocean_config.get(CONF_SPECIES_REGION, "global"),
+                    CONF_HABITAT_PRESET: habitat_preset,
+                    CONF_TIME_PERIODS: self.ocean_config.get(CONF_TIME_PERIODS, TIME_PERIODS_FULL_DAY),
+                    CONF_AUTO_APPLY_THRESHOLDS: False,  # Always show thresholds
+                    CONF_TIDE_MODE: TIDE_MODE_PROXY,  # Always use proxy
+                    CONF_MARINE_ENABLED: True,  # Always enabled
+                    CONF_WEATHER_ENTITY: self.ocean_config.get(CONF_WEATHER_ENTITY),
+                    CONF_USE_OPEN_METEO: self.ocean_config.get(CONF_USE_OPEN_METEO, True),
+                    CONF_THRESHOLDS: {
+                        "max_wind_speed": user_input["max_wind_speed"],
+                        "max_gust_speed": user_input["max_gust_speed"],
+                        "max_wave_height": user_input["max_wave_height"],
+                        "min_temperature": user_input["min_temperature"],
+                        "max_temperature": user_input["max_temperature"],
+                    },
+                }
+
+                # Add timezone and elevation
+                final_config[CONF_TIMEZONE] = str(self.hass.config.time_zone)
+                final_config[CONF_ELEVATION] = self.hass.config.elevation
+
+                _LOGGER.debug("Creating ocean config entry with data keys: %s", list(final_config.keys()))
+
+                return self.async_create_entry(
+                    title=name,
+                    data=final_config,
+                )
+            except KeyError as ke:
+                _LOGGER.exception("Missing expected key when building final ocean config: %s", ke)
+                # Re-show thresholds form with a general error so user can try again
+                return self.async_show_form(
+                    step_id="ocean_thresholds",
+                    data_schema=vol.Schema({
+                        vol.Required(
+                            "max_wind_speed",
+                            default=25,
+                        ): selector.NumberSelector(
+                            selector.NumberSelectorConfig(
+                                min=10,
+                                max=50,
+                                step=5,
+                                unit_of_measurement="km/h",
+                                mode="slider",
+                            )
+                        ),
+                        vol.Required(
+                            "max_gust_speed",
+                            default=40,
+                        ): selector.NumberSelector(
+                            selector.NumberSelectorConfig(
+                                min=15,
+                                max=70,
+                                step=5,
+                                unit_of_measurement="km/h",
+                                mode="slider",
+                            )
+                        ),
+                        vol.Required(
+                            "max_wave_height",
+                            default=2.0,
+                        ): selector.NumberSelector(
+                            selector.NumberSelectorConfig(
+                                min=0.5,
+                                max=5.0,
+                                step=0.5,
+                                unit_of_measurement="m",
+                                mode="slider",
+                            )
+                        ),
+                        vol.Required(
+                            "min_temperature",
+                            default=5,
+                        ): selector.NumberSelector(
+                            selector.NumberSelectorConfig(
+                                min=-10,
+                                max=20,
+                                step=1,
+                                unit_of_measurement="°C",
+                            )
+                        ),
+                        vol.Required(
+                            "max_temperature",
+                            default=35,
+                        ): selector.NumberSelector(
+                            selector.NumberSelectorConfig(
+                                min=20,
+                                max=50,
+                                step=1,
+                                unit_of_measurement="°C",
+                            )
+                        ),
+                    }),
+                    errors={"base": "unknown"},
+                )
+            except Exception as exc:
+                _LOGGER.exception("Unhandled exception in async_step_ocean_thresholds: %s", exc)
+                return self.async_show_form(
+                    step_id="ocean_thresholds",
+                    data_schema=vol.Schema({
+                        vol.Required(
+                            "max_wind_speed",
+                            default=25,
+                        ): selector.NumberSelector(
+                            selector.NumberSelectorConfig(
+                                min=10,
+                                max=50,
+                                step=5,
+                                unit_of_measurement="km/h",
+                                mode="slider",
+                            )
+                        ),
+                        vol.Required(
+                            "max_gust_speed",
+                            default=40,
+                        ): selector.NumberSelector(
+                            selector.NumberSelectorConfig(
+                                min=15,
+                                max=70,
+                                step=5,
+                                unit_of_measurement="km/h",
+                                mode="slider",
+                            )
+                        ),
+                        vol.Required(
+                            "max_wave_height",
+                            default=2.0,
+                        ): selector.NumberSelector(
+                            selector.NumberSelectorConfig(
+                                min=0.5,
+                                max=5.0,
+                                step=0.5,
+                                unit_of_measurement="m",
+                                mode="slider",
+                            )
+                        ),
+                        vol.Required(
+                            "min_temperature",
+                            default=5,
+                        ): selector.NumberSelector(
+                            selector.NumberSelectorConfig(
+                                min=-10,
+                                max=20,
+                                step=1,
+                                unit_of_measurement="°C",
+                            )
+                        ),
+                        vol.Required(
+                            "max_temperature",
+                            default=35,
+                        ): selector.NumberSelector(
+                            selector.NumberSelectorConfig(
+                                min=20,
+                                max=50,
+                                step=1,
+                                unit_of_measurement="°C",
+                            )
+                        ),
+                    }),
+                    errors={"base": "unknown"},
+                )
+
+        # When showing the form for the first time, use habitat preset defaults
         habitat = HABITAT_PRESETS.get(
-            self.ocean_config.get(CONF_HABITAT_PRESET, "rocky_point"),
-            HABITAT_PRESETS["rocky_point"]
+            self.ocean_config.get(CONF_HABITAT_PRESET, HABITAT_ROCKY_POINT),
+            HABITAT_PRESETS.get(HABITAT_ROCKY_POINT, {})
         )
 
         return self.async_show_form(

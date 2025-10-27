@@ -51,12 +51,15 @@ async def _register_custom_card(hass: HomeAssistant) -> None:
     card_dir = Path(__file__).parent / "www"
     card_url = "/fishing_assistant_local"
     
-    # Register the static path using async method with keyword arguments
-    await hass.http.async_register_static_paths([
-        StaticPathConfig(url_path=card_url, path=str(card_dir), cache_headers=False)
-    ])
-    
-    # Auto-register the resource in Lovelace
+    try:
+        # Register the static path using async method with keyword arguments
+        await hass.http.async_register_static_paths([
+            StaticPathConfig(url_path=card_url, path=str(card_dir), cache_headers=False)
+        ])
+    except Exception as e:
+        _LOGGER.debug("Could not register static paths for fishing assistant card: %s", e)
+
+    # Auto-register the resource in Lovelace (best effort)
     resource_url = f"{card_url}/fishing-assistant-card.js"
     
     try:
