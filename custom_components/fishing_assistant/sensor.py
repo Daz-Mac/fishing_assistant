@@ -28,6 +28,7 @@ from .tide_proxy import TideProxy
 from .marine_data import MarineDataFetcher
 from .weather_fetcher import WeatherFetcher
 from .data_formatter import DataFormatter
+from .api import OpenMeteoClient
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -62,12 +63,23 @@ async def _setup_freshwater_sensors(hass, config_entry, async_add_entities):
     period_type = data.get(CONF_TIME_PERIODS, PERIOD_FULL_DAY)
     weather_entity = data.get(CONF_WEATHER_ENTITY)
 
+    # Open-Meteo usage flag (default True per user request)
+    use_open_meteo = data.get("use_open_meteo", True)
+    open_meteo_client = OpenMeteoClient() if use_open_meteo else None
+
     # Initialize species loader
     species_loader = SpeciesLoader(hass)
     await species_loader.async_load_profiles()
 
-    # Initialize weather fetcher with weather_entity parameter
-    weather_fetcher = WeatherFetcher(hass, lat, lon, weather_entity)
+    # Initialize weather fetcher with weather_entity parameter and optional Open-Meteo client
+    weather_fetcher = WeatherFetcher(
+        hass,
+        lat,
+        lon,
+        weather_entity=weather_entity,
+        use_open_meteo=use_open_meteo,
+        open_meteo_client=open_meteo_client,
+    )
 
     for fish in fish_list:
         sensors.append(
@@ -101,13 +113,24 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
     lon = data["longitude"]
     weather_entity = data.get(CONF_WEATHER_ENTITY)
 
+    # Open-Meteo usage flag (default True)
+    use_open_meteo = data.get("use_open_meteo", True)
+    open_meteo_client = OpenMeteoClient() if use_open_meteo else None
+
     # Create a location key based on coordinates for sensor naming consistency
     location_key = f"{name.lower().replace(' ', '_')}"
 
     # Initialize data fetchers with weather_entity parameter
     tide_proxy = None
     marine_fetcher = None
-    weather_fetcher = WeatherFetcher(hass, lat, lon, weather_entity)
+    weather_fetcher = WeatherFetcher(
+        hass,
+        lat,
+        lon,
+        weather_entity=weather_entity,
+        use_open_meteo=use_open_meteo,
+        open_meteo_client=open_meteo_client,
+    )
 
     if data.get(CONF_TIDE_MODE) == TIDE_MODE_PROXY:
         tide_proxy = TideProxy(hass, lat, lon)
