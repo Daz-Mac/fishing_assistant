@@ -1,13 +1,16 @@
 """Config flow for Fishing Assistant integration."""
 from __future__ import annotations
+
 import logging
 from typing import Any
+
 import voluptuous as vol
 from homeassistant import config_entries
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 import homeassistant.helpers.config_validation as cv
+
 from .const import (
     DOMAIN,
     CONF_MODE,
@@ -52,9 +55,9 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     def __init__(self):
         """Initialize the config flow."""
-        self.ocean_config = {}
-        self.freshwater_config = {}
-        self.species_loader = None
+        self.ocean_config: dict[str, Any] = {}
+        self.freshwater_config: dict[str, Any] = {}
+        self.species_loader: SpeciesLoader | None = None
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Handle the initial step - choose mode or use legacy freshwater."""
@@ -68,7 +71,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_mode_select(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Select fishing mode."""
-        errors = {}
+        errors: dict[str, str] = {}
 
         if user_input is not None:
             try:
@@ -77,24 +80,30 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 else:
                     return await self.async_step_freshwater()
             except Exception as err:
-                _LOGGER.error("Error in mode_select: %s", err)
+                _LOGGER.exception("Error in mode_select: %s", err)
                 errors["base"] = "unknown"
 
         return self.async_show_form(
             step_id="mode_select",
-            data_schema=vol.Schema({
-                vol.Required(CONF_MODE, default=MODE_FRESHWATER): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=[
-                            {"value": MODE_FRESHWATER, "label": "🎣 Freshwater (Lakes, Rivers, Ponds)"},
-                            {"value": MODE_OCEAN, "label": "🌊 Ocean/Shore Fishing"},
-                        ],
-                        mode="list",
-                    )
-                ),
-            }),
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_MODE, default=MODE_FRESHWATER): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[
+                                {"value": MODE_FRESHWATER, "label": "🎣 Freshwater (Lakes, Rivers, Ponds)"},
+                                {"value": MODE_OCEAN, "label": "🌊 Ocean/Shore Fishing"},
+                            ],
+                            mode="list",
+                        )
+                    ),
+                }
+            ),
             errors=errors,
         )
+
+    # ---------------------------
+    # Freshwater flow
+    # ---------------------------
 
     async def async_step_freshwater(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Handle freshwater fishing setup - location and species."""
@@ -105,7 +114,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             # Validate coordinates
-            errors = {}
+            errors: dict[str, str] = {}
             try:
                 lat = float(user_input[CONF_LATITUDE])
                 lon = float(user_input[CONF_LONGITUDE])
@@ -126,12 +135,13 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return await self.async_step_freshwater_time_periods()
 
         # Get freshwater species from JSON
-        freshwater_species = self.species_loader.get_species_by_type("freshwater")
+        freshwater_species = []
+        if self.species_loader:
+            freshwater_species = self.species_loader.get_species_by_type("freshwater")
 
         # Check if species loaded successfully
         if not freshwater_species:
-            _LOGGER.error("No freshwater species found in species_profiles.json")
-            # Fallback to basic options
+            _LOGGER.debug("No freshwater species found in species_profiles.json; using fallback options")
             species_options = [
                 {"value": "bass", "label": "🐟 Bass"},
                 {"value": "pike", "label": "🐟 Pike"},
@@ -158,31 +168,29 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if season_info:
                     label += f" ({season_info})"
 
-                species_options.append({
-                    "value": species_id,
-                    "label": label
-                })
+                species_options.append({"value": species_id, "label": label})
 
         return self.async_show_form(
             step_id="freshwater",
-            data_schema=vol.Schema({
-                vol.Required(CONF_NAME): str,
-                vol.Required(CONF_LATITUDE): cv.latitude,
-                vol.Required(CONF_LONGITUDE): cv.longitude,
-                vol.Required(CONF_FISH): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=species_options,
-                        multiple=True,
-                        mode="dropdown",
-                    )
-                ),
-                vol.Required(CONF_BODY_TYPE, default="lake"): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=["lake", "river", "pond"],
-                        mode="dropdown",
-                    )
-                ),
-            }),
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_NAME): str,
+                    vol.Required(CONF_LATITUDE): cv.latitude,
+                    vol.Required(CONF_LONGITUDE): cv.longitude,
+                    vol.Required(
+                        CONF_FISH
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=species_options,
+                            multiple=True,
+                            mode="dropdown",
+                        )
+                    ),
+                    vol.Required(CONF_BODY_TYPE, default="lake"): selector.SelectSelector(
+                        selector.SelectSelectorConfig(options=["lake", "river", "pond"], mode="dropdown")
+                    ),
+                }
+            ),
         )
 
     async def async_step_freshwater_time_periods(self, user_input: dict[str, Any] | None = None) -> FlowResult:
@@ -193,29 +201,28 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="freshwater_time_periods",
-            data_schema=vol.Schema({
-                vol.Required(
-                    CONF_TIME_PERIODS,
-                    default=TIME_PERIODS_FULL_DAY,
-                ): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=[
-                            {
-                                "value": TIME_PERIODS_FULL_DAY,
-                                "label": "🌅 Full Day (4 periods: Morning, Afternoon, Evening, Night)"
-                            },
-                            {
-                                "value": TIME_PERIODS_DAWN_DUSK,
-                                "label": "🌄 Dawn & Dusk Only (Prime fishing times around sunrise/sunset)"
-                            },
-                        ],
-                        mode="list",
-                    )
-                ),
-            }),
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_TIME_PERIODS, default=TIME_PERIODS_FULL_DAY): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[
+                                {
+                                    "value": TIME_PERIODS_FULL_DAY,
+                                    "label": "🌅 Full Day (4 periods: Morning, Afternoon, Evening, Night)",
+                                },
+                                {
+                                    "value": TIME_PERIODS_DAWN_DUSK,
+                                    "label": "🌄 Dawn & Dusk Only (Prime fishing times around sunrise/sunset)",
+                                },
+                            ],
+                            mode="list",
+                        )
+                    ),
+                }
+            ),
             description_placeholders={
                 "info": "Choose which time periods to monitor. Dawn & Dusk focuses on the most productive fishing times."
-            }
+            },
         )
 
     async def async_step_freshwater_weather(self, user_input: dict[str, Any] | None = None) -> FlowResult:
@@ -241,22 +248,12 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             return await self.async_step_freshwater_thresholds()
 
-        # Get available weather entities
-        weather_entities = []
-        for state in self.hass.states.async_all("weather"):
-            weather_entities.append(state.entity_id)
-
-        # Build options from available weather entities (may be empty)
-        weather_options = []
-        for entity in weather_entities:
-            weather_options.append({"value": entity, "label": entity})
-
         return self.async_show_form(
             step_id="freshwater_weather",
             data_schema=self._get_freshwater_weather_schema(),
             description_placeholders={
-                "info": "Select a Home Assistant weather entity to provide weather data for fishing conditions or enable Open‑Meteo. If Open‑Meteo is enabled, a weather entity is optional."
-            }
+                "info": "Select an optional Home Assistant weather entity to provide weather data for fishing conditions or enable Open‑Meteo."
+            },
         )
 
     def _get_freshwater_weather_schema(self, user_input: dict[str, Any] | None = None):
@@ -267,17 +264,29 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             default_use_open = user_input.get(CONF_USE_OPEN_METEO, default_use_open)
             default_weather = user_input.get(CONF_WEATHER_ENTITY, default_weather)
 
-        return vol.Schema({
-            vol.Required(CONF_USE_OPEN_METEO, default=default_use_open): selector.BooleanSelector(
-                selector.BooleanSelectorConfig()
-            ),
-            vol.Optional(CONF_WEATHER_ENTITY, default=default_weather): selector.SelectSelector(
-                selector.SelectSelectorConfig(
-                    options=[{"value": s.entity_id, "label": s.entity_id} for s in self.hass.states.async_all("weather")] if self.hass else [],
-                    mode="dropdown",
-                )
-            ),
-        })
+        # Build weather entity options list
+        weather_entities = [s.entity_id for s in self.hass.states.async_all("weather")]
+        weather_options = [{"value": e} for e in weather_entities]
+
+        # If Open-Meteo is the default/selected, allow an explicit empty option so the selector validates
+        if default_use_open:
+            weather_options.insert(0, {"value": ""})
+
+        # Ensure default_weather is valid for the selector options; otherwise choose empty if open mete0 is used
+        option_values = {opt["value"] for opt in weather_options}
+        if default_weather not in option_values:
+            default_weather = "" if default_use_open else (weather_entities[0] if weather_entities else "")
+
+        return vol.Schema(
+            {
+                vol.Required(CONF_USE_OPEN_METEO, default=default_use_open): selector.BooleanSelector(
+                    selector.BooleanSelectorConfig()
+                ),
+                vol.Optional(CONF_WEATHER_ENTITY, default=default_weather): selector.SelectSelector(
+                    selector.SelectSelectorConfig(options=weather_options, mode="dropdown")
+                ),
+            }
+        )
 
     async def async_step_freshwater_thresholds(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Configure safety thresholds for freshwater."""
@@ -292,7 +301,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         # Get defaults based on body type
         body_type = self.freshwater_config.get(CONF_BODY_TYPE, "lake")
-        
+
         # Set defaults based on body type
         if body_type == "river":
             default_wind = 30
@@ -303,45 +312,20 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="freshwater_thresholds",
-            data_schema=vol.Schema({
-                vol.Required(
-                    "max_wind_speed",
-                    default=default_wind,
-                ): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=10,
-                        max=50,
-                        step=5,
-                        unit_of_measurement="km/h",
-                        mode="slider",
-                    )
-                ),
-                vol.Required(
-                    "min_temperature",
-                    default=0,
-                ): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=-10,
-                        max=20,
-                        step=1,
-                        unit_of_measurement="°C",
-                    )
-                ),
-                vol.Required(
-                    "max_temperature",
-                    default=35,
-                ): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=20,
-                        max=50,
-                        step=1,
-                        unit_of_measurement="°C",
-                    )
-                ),
-            }),
-            description_placeholders={
-                "info": "Set safe fishing limits for your comfort and safety."
-            }
+            data_schema=vol.Schema(
+                {
+                    vol.Required("max_wind_speed", default=default_wind): selector.NumberSelector(
+                        selector.NumberSelectorConfig(min=10, max=50, step=5, unit_of_measurement="km/h", mode="slider")
+                    ),
+                    vol.Required("min_temperature", default=0): selector.NumberSelector(
+                        selector.NumberSelectorConfig(min=-10, max=20, step=1, unit_of_measurement="°C")
+                    ),
+                    vol.Required("max_temperature", default=35): selector.NumberSelector(
+                        selector.NumberSelectorConfig(min=20, max=50, step=1, unit_of_measurement="°C")
+                    ),
+                }
+            ),
+            description_placeholders={"info": "Set safe fishing limits for your comfort and safety."},
         )
 
     async def _async_step_freshwater_complete(self) -> FlowResult:
@@ -355,14 +339,11 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if CONF_USE_OPEN_METEO not in self.freshwater_config:
             self.freshwater_config[CONF_USE_OPEN_METEO] = True
 
-        return self.async_create_entry(
-            title=self.freshwater_config.get(CONF_NAME, DEFAULT_NAME),
-            data=self.freshwater_config,
-        )
+        return self.async_create_entry(title=self.freshwater_config.get(CONF_NAME, DEFAULT_NAME), data=self.freshwater_config)
 
     async def _async_step_freshwater(self, user_input: dict[str, Any]) -> FlowResult:
         """Process freshwater setup (legacy method for backwards compatibility)."""
-        errors = {}
+        errors: dict[str, str] = {}
 
         # Validate coordinates
         try:
@@ -374,11 +355,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors["base"] = "invalid_coordinates"
 
         if errors:
-            return self.async_show_form(
-                step_id="freshwater",
-                data_schema=self._get_freshwater_schema(user_input),
-                errors=errors,
-            )
+            return self.async_show_form(step_id="freshwater", data_schema=self._get_freshwater_schema(user_input), errors=errors)
 
         # Add timezone and elevation (can be enhanced later)
         user_input[CONF_TIMEZONE] = str(self.hass.config.time_zone)
@@ -397,16 +374,9 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if not user_input.get(CONF_USE_OPEN_METEO, True) and CONF_WEATHER_ENTITY not in user_input:
             _LOGGER.error("Legacy config missing weather entity and Open-Meteo disabled")
             errors["base"] = "no_weather_entity"
-            return self.async_show_form(
-                step_id="freshwater",
-                data_schema=self._get_freshwater_schema(user_input),
-                errors=errors,
-            )
+            return self.async_show_form(step_id="freshwater", data_schema=self._get_freshwater_schema(user_input), errors=errors)
 
-        return self.async_create_entry(
-            title=user_input.get(CONF_NAME, DEFAULT_NAME),
-            data=user_input,
-        )
+        return self.async_create_entry(title=user_input.get(CONF_NAME, DEFAULT_NAME), data=user_input)
 
     def _get_freshwater_schema(self, user_input: dict[str, Any] | None = None):
         """Get freshwater schema with defaults - used for error handling."""
@@ -423,7 +393,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         ]
 
         # If species loader is available, use it
-        if self.species_loader and self.species_loader._profiles:
+        if self.species_loader and getattr(self.species_loader, "_profiles", None):
             freshwater_species = self.species_loader.get_species_by_type("freshwater")
             if freshwater_species:
                 species_options = []
@@ -444,37 +414,29 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     if season_info:
                         label += f" ({season_info})"
 
-                    species_options.append({
-                        "value": species_id,
-                        "label": label
-                    })
+                    species_options.append({"value": species_id, "label": label})
 
-        return vol.Schema({
-            vol.Required(CONF_NAME, default=user_input.get(CONF_NAME, "") if user_input else ""): str,
-            vol.Required(CONF_LATITUDE, default=user_input.get(CONF_LATITUDE, "") if user_input else ""): cv.latitude,
-            vol.Required(CONF_LONGITUDE, default=user_input.get(CONF_LONGITUDE, "") if user_input else ""): cv.longitude,
-            vol.Required(CONF_FISH, default=user_input.get(CONF_FISH, []) if user_input else []): selector.SelectSelector(
-                selector.SelectSelectorConfig(
-                    options=species_options,
-                    multiple=True,
-                    mode="dropdown",
-                )
-            ),
-            vol.Required(CONF_BODY_TYPE, default=user_input.get(CONF_BODY_TYPE, "lake") if user_input else "lake"): selector.SelectSelector(
-                selector.SelectSelectorConfig(
-                    options=["lake", "river", "pond"],
-                    mode="dropdown",
-                )
-            ),
-        })
+        return vol.Schema(
+            {
+                vol.Required(CONF_NAME, default=(user_input.get(CONF_NAME, "") if user_input else "")): str,
+                vol.Required(CONF_LATITUDE, default=(user_input.get(CONF_LATITUDE, "") if user_input else "")): cv.latitude,
+                vol.Required(CONF_LONGITUDE, default=(user_input.get(CONF_LONGITUDE, "") if user_input else "")): cv.longitude,
+                vol.Required(CONF_FISH, default=(user_input.get(CONF_FISH, []) if user_input else [])): selector.SelectSelector(
+                    selector.SelectSelectorConfig(options=species_options, multiple=True, mode="dropdown")
+                ),
+                vol.Required(CONF_BODY_TYPE, default=(user_input.get(CONF_BODY_TYPE, "lake") if user_input else "lake")): selector.SelectSelector(
+                    selector.SelectSelectorConfig(options=["lake", "river", "pond"], mode="dropdown")
+                ),
+            }
+        )
 
-    # ============================================================================
-    # OCEAN MODE FLOW
-    # ============================================================================
+    # ---------------------------
+    # Ocean flow
+    # ---------------------------
 
     async def async_step_ocean_location(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Configure ocean fishing location."""
-        errors = {}
+        errors: dict[str, str] = {}
 
         if user_input is not None:
             # Validate coordinates
@@ -497,11 +459,13 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="ocean_location",
-            data_schema=vol.Schema({
-                vol.Required(CONF_NAME, default=default_name): str,
-                vol.Required(CONF_LATITUDE, default=default_lat): cv.latitude,
-                vol.Required(CONF_LONGITUDE, default=default_lon): cv.longitude,
-            }),
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_NAME, default=default_name): str,
+                    vol.Required(CONF_LATITUDE, default=default_lat): cv.latitude,
+                    vol.Required(CONF_LONGITUDE, default=default_lon): cv.longitude,
+                }
+            ),
             errors=errors,
         )
 
@@ -537,66 +501,46 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return await self.async_step_ocean_habitat()
 
         # Build a comprehensive species list organized by region
-        regions = self.species_loader.get_regions_by_type("ocean")
-        species_options = []
+        regions = self.species_loader.get_regions_by_type("ocean") if self.species_loader else []
+        species_options: list[dict[str, str]] = []
 
         # === SECTION 1: GENERAL REGION PROFILES ===
-        species_options.append({
-            "value": "separator_regions",
-            "label": "━━━━━ 🎣 GENERAL REGION PROFILES ━━━━━"
-        })
+        species_options.append({"value": "separator_regions", "label": "━━━━━ 🎣 GENERAL REGION PROFILES ━━━━━"})
 
         for region in regions:
             region_id = region["id"]
             region_name = region["name"]
-
             # Add a "General Mixed" option for each region
-            species_options.append({
-                "value": f"general_mixed_{region_id}",
-                "label": f"🎣 {region_name} - General Mixed Species"
-            })
+            species_options.append({"value": f"general_mixed_{region_id}", "label": f"🎣 {region_name} - General Mixed Species"})
 
         # === SECTION 2: SPECIFIC SPECIES ===
-        species_options.append({
-            "value": "separator_species",
-            "label": "━━━━━ 🐟 TARGET SPECIFIC SPECIES ━━━━━"
-        })
+        species_options.append({"value": "separator_species", "label": "━━━━━ 🐟 TARGET SPECIFIC SPECIES ━━━━━"})
 
         # Collect all ocean species from all regions (excluding global)
-        all_species = []
+        all_species: list[dict[str, Any]] = []
         for region in regions:
             region_id = region["id"]
-
-            # Skip global region for species listing (it only has general profiles)
             if region_id == "global":
                 continue
-
-            # Get all species for this region
             species_list = self.species_loader.get_species_by_region(region_id)
-
-            # Filter out general profiles and add to collection
             for species in species_list:
-                # Only include ocean species
                 if species.get("type") != "ocean":
                     continue
-
-                if (not species["id"].startswith("general_mixed")
-                        and not species["id"].startswith("surf_predators")
-                        and not species["id"].startswith("flatfish")):
-                    # Check if we already have this species (avoid duplicates)
+                if (
+                    not species["id"].startswith("general_mixed")
+                    and not species["id"].startswith("surf_predators")
+                    and not species["id"].startswith("flatfish")
+                ):
                     if not any(s["id"] == species["id"] for s in all_species):
                         all_species.append(species)
 
         # Sort species alphabetically by name
         all_species.sort(key=lambda s: s.get("name", s["id"]))
 
-        # Add sorted species to options
         for species in all_species:
             emoji = species.get("emoji", "🐟")
             name = species.get("name", species["id"])
             species_id = species["id"]
-
-            # Add active months info
             active_months = species.get("active_months", [])
             if len(active_months) == 12:
                 season_info = "Year-round"
@@ -604,29 +548,21 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 season_info = f"Active: {len(active_months)} months"
             else:
                 season_info = ""
-
             label = f"{emoji} {name}"
             if season_info:
                 label += f" ({season_info})"
-
             species_options.append({"value": species_id, "label": label})
 
         return self.async_show_form(
             step_id="ocean_species",
-            data_schema=vol.Schema({
-                vol.Required(
-                    CONF_SPECIES_ID,
-                    default="general_mixed_gibraltar",  # Default to Gibraltar general
-                ): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=species_options,
-                        mode="dropdown",
-                    )
-                ),
-            }),
-            description_placeholders={
-                "info": "Choose a general region profile for mixed species, or target a specific species."
-            }
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_SPECIES_ID, default="general_mixed_gibraltar"): selector.SelectSelector(
+                        selector.SelectSelectorConfig(options=species_options, mode="dropdown")
+                    ),
+                }
+            ),
+            description_placeholders={"info": "Choose a general region profile for mixed species, or target a specific species."},
         )
 
     async def async_step_ocean_habitat(self, user_input: dict[str, Any] | None = None) -> FlowResult:
@@ -635,17 +571,17 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             _LOGGER.debug(
                 "async_step_ocean_habitat - received user_input: %s (types: %s)",
                 user_input,
-                {k: type(v).__name__ for k, v in user_input.items()}
+                {k: type(v).__name__ for k, v in user_input.items()},
             )
             try:
                 # Defensive extraction and validation of habitat preset
                 raw_hp = user_input.get(CONF_HABITAT_PRESET, "")
-                # Coerce to str (selector sometimes returns enums/other types in edge cases)
                 habitat_preset = str(raw_hp).strip() if raw_hp is not None else ""
                 if not habitat_preset or habitat_preset not in HABITAT_PRESETS:
                     _LOGGER.warning(
                         "Invalid or missing habitat_preset submitted: %s. Falling back to default: %s",
-                        habitat_preset, HABITAT_ROCKY_POINT
+                        habitat_preset,
+                        HABITAT_ROCKY_POINT,
                     )
                     habitat_preset = HABITAT_ROCKY_POINT
 
@@ -658,43 +594,41 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 # Re-show the form with a general error so the user can retry
                 return self.async_show_form(
                     step_id="ocean_habitat",
-                    data_schema=vol.Schema({
-                        vol.Required(
-                            CONF_HABITAT_PRESET,
-                            default=HABITAT_ROCKY_POINT,
-                        ): selector.SelectSelector(
-                            selector.SelectSelectorConfig(
-                                options=[
-                                    {"value": "open_beach", "label": "🏖️ Open Sandy Beach"},
-                                    {"value": "rocky_point", "label": "🪨 Rocky Point/Jetty"},
-                                    {"value": "harbour", "label": "⚓ Harbour/Pier"},
-                                    {"value": "reef", "label": "🪸 Offshore Reef"},
-                                ],
-                                mode="list",
-                            )
-                        ),
-                    }),
+                    data_schema=vol.Schema(
+                        {
+                            vol.Required(CONF_HABITAT_PRESET, default=HABITAT_ROCKY_POINT): selector.SelectSelector(
+                                selector.SelectSelectorConfig(
+                                    options=[
+                                        {"value": "open_beach", "label": "🏖️ Open Sandy Beach"},
+                                        {"value": "rocky_point", "label": "🪨 Rocky Point/Jetty"},
+                                        {"value": "harbour", "label": "⚓ Harbour/Pier"},
+                                        {"value": "reef", "label": "🪸 Offshore Reef"},
+                                    ],
+                                    mode="list",
+                                )
+                            ),
+                        }
+                    ),
                     errors={"base": "unknown"},
                 )
 
         return self.async_show_form(
             step_id="ocean_habitat",
-            data_schema=vol.Schema({
-                vol.Required(
-                    CONF_HABITAT_PRESET,
-                    default=HABITAT_ROCKY_POINT,
-                ): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=[
-                            {"value": "open_beach", "label": "🏖️ Open Sandy Beach"},
-                            {"value": "rocky_point", "label": "🪨 Rocky Point/Jetty"},
-                            {"value": "harbour", "label": "⚓ Harbour/Pier"},
-                            {"value": "reef", "label": "🪸 Offshore Reef"},
-                        ],
-                        mode="list",
-                    )
-                ),
-            }),
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_HABITAT_PRESET, default=HABITAT_ROCKY_POINT): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[
+                                {"value": "open_beach", "label": "🏖️ Open Sandy Beach"},
+                                {"value": "rocky_point", "label": "🪨 Rocky Point/Jetty"},
+                                {"value": "harbour", "label": "⚓ Harbour/Pier"},
+                                {"value": "reef", "label": "🪸 Offshore Reef"},
+                            ],
+                            mode="list",
+                        )
+                    ),
+                }
+            ),
         )
 
     async def async_step_ocean_weather(self, user_input: dict[str, Any] | None = None) -> FlowResult:
@@ -707,11 +641,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if not use_open:
                 if not user_input.get(CONF_WEATHER_ENTITY):
                     errors = {"base": "no_weather_entity"}
-                    return self.async_show_form(
-                        step_id="ocean_weather",
-                        data_schema=self._get_ocean_weather_schema(user_input),
-                        errors=errors,
-                    )
+                    return self.async_show_form(step_id="ocean_weather", data_schema=self._get_ocean_weather_schema(user_input), errors=errors)
                 self.ocean_config[CONF_WEATHER_ENTITY] = user_input[CONF_WEATHER_ENTITY]
             else:
                 if user_input.get(CONF_WEATHER_ENTITY):
@@ -723,19 +653,12 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             return await self.async_step_ocean_time_periods()
 
-        # Build options for weather entities (may be empty)
-        weather_entities = []
-        for state in self.hass.states.async_all("weather"):
-            weather_entities.append(state.entity_id)
-
-        weather_options = [{"value": e, "label": e} for e in weather_entities]
-
         return self.async_show_form(
             step_id="ocean_weather",
             data_schema=self._get_ocean_weather_schema(),
             description_placeholders={
                 "info": "Select a Home Assistant weather entity or enable Open‑Meteo marine API. If Open‑Meteo is enabled, a weather entity is optional."
-            }
+            },
         )
 
     def _get_ocean_weather_schema(self, user_input: dict[str, Any] | None = None):
@@ -746,23 +669,37 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             default_use_open = user_input.get(CONF_USE_OPEN_METEO, default_use_open)
             default_weather = user_input.get(CONF_WEATHER_ENTITY, default_weather)
 
-        return vol.Schema({
-            vol.Required(CONF_USE_OPEN_METEO, default=default_use_open): selector.BooleanSelector(
-                selector.BooleanSelectorConfig()
-            ),
-            vol.Optional(CONF_WEATHER_ENTITY, default=default_weather): selector.SelectSelector(
-                selector.SelectSelectorConfig(
-                    options=[{"value": s.entity_id, "label": s.entity_id} for s in self.hass.states.async_all("weather")] if self.hass else [],
-                    mode="dropdown",
-                )
-            ),
-        })
+        # Build weather entity options from current HA states
+        weather_entities = [s.entity_id for s in self.hass.states.async_all("weather")]
+        weather_options = [{"value": e} for e in weather_entities]
+
+        # If Open‑Meteo is enabled (or default is enabled) add an explicit "none" option
+        # so the selector can be empty and still validate.
+        if default_use_open:
+            weather_options.insert(0, {"value": ""})
+
+        # Ensure the default is valid for the selector. If it's not present, use an empty value
+        # (allowed when Open‑Meteo is on). This prevents voluptuous complaining the default isn't in options.
+        option_values = {opt["value"] for opt in weather_options}
+        if default_weather not in option_values:
+            default_weather = "" if default_use_open else (weather_entities[0] if weather_entities else "")
+
+        return vol.Schema(
+            {
+                vol.Required(CONF_USE_OPEN_METEO, default=default_use_open): selector.BooleanSelector(
+                    selector.BooleanSelectorConfig()
+                ),
+                vol.Optional(CONF_WEATHER_ENTITY, default=default_weather): selector.SelectSelector(
+                    selector.SelectSelectorConfig(options=weather_options, mode="dropdown")
+                ),
+            }
+        )
 
     async def async_step_ocean_time_periods(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Configure time period monitoring preference."""
         if user_input is not None:
             _LOGGER.debug("async_step_ocean_time_periods - received user_input: %s", user_input)
-            errors = {}
+            errors: dict[str, str] = {}
             try:
                 # Basic validation: ensure time_periods is present and valid
                 tp = user_input.get(CONF_TIME_PERIODS)
@@ -776,30 +713,27 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if errors:
                     return self.async_show_form(
                         step_id="ocean_time_periods",
-                        data_schema=vol.Schema({
-                            vol.Required(
-                                CONF_TIME_PERIODS,
-                                default=self.ocean_config.get(CONF_TIME_PERIODS, TIME_PERIODS_FULL_DAY),
-                            ): selector.SelectSelector(
-                                selector.SelectSelectorConfig(
-                                    options=[
-                                        {
-                                            "value": TIME_PERIODS_FULL_DAY,
-                                            "label": "🌅 Full Day (4 periods: Morning, Afternoon, Evening, Night)"
-                                        },
-                                        {
-                                            "value": TIME_PERIODS_DAWN_DUSK,
-                                            "label": "🌄 Dawn & Dusk Only (Prime fishing times: ±1hr sunrise/sunset)"
-                                        },
-                                    ],
-                                    mode="list",
-                                )
-                            ),
-                        }),
+                        data_schema=vol.Schema(
+                            {
+                                vol.Required(CONF_TIME_PERIODS, default=self.ocean_config.get(CONF_TIME_PERIODS, TIME_PERIODS_FULL_DAY)): selector.SelectSelector(
+                                    selector.SelectSelectorConfig(
+                                        options=[
+                                            {
+                                                "value": TIME_PERIODS_FULL_DAY,
+                                                "label": "🌅 Full Day (4 periods: Morning, Afternoon, Evening, Night)",
+                                            },
+                                            {
+                                                "value": TIME_PERIODS_DAWN_DUSK,
+                                                "label": "🌄 Dawn & Dusk Only (Prime fishing times: ±1hr sunrise/sunset)",
+                                            },
+                                        ],
+                                        mode="list",
+                                    )
+                                ),
+                            }
+                        ),
                         errors=errors,
-                        description_placeholders={
-                            "info": "Choose which time periods to monitor. Dawn & Dusk focuses on the most productive fishing times."
-                        }
+                        description_placeholders={"info": "Choose which time periods to monitor. Dawn & Dusk focuses on the most productive fishing times."},
                     )
 
                 # Store and continue
@@ -808,60 +742,47 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             except Exception as exc:
                 _LOGGER.exception("Unhandled exception in async_step_ocean_time_periods: %s", exc)
-                # Re-show the form with a general error while preserving current defaults
                 return self.async_show_form(
                     step_id="ocean_time_periods",
-                    data_schema=vol.Schema({
-                        vol.Required(
-                            CONF_TIME_PERIODS,
-                            default=self.ocean_config.get(CONF_TIME_PERIODS, TIME_PERIODS_FULL_DAY),
-                        ): selector.SelectSelector(
-                            selector.SelectSelectorConfig(
-                                options=[
-                                    {
-                                        "value": TIME_PERIODS_FULL_DAY,
-                                        "label": "🌅 Full Day (4 periods: Morning, Afternoon, Evening, Night)"
-                                    },
-                                    {
-                                        "value": TIME_PERIODS_DAWN_DUSK,
-                                        "label": "🌄 Dawn & Dusk Only (Prime fishing times: ±1hr sunrise/sunset)"
-                                    },
-                                ],
-                                mode="list",
-                            )
-                        ),
-                    }),
+                    data_schema=vol.Schema(
+                        {
+                            vol.Required(CONF_TIME_PERIODS, default=self.ocean_config.get(CONF_TIME_PERIODS, TIME_PERIODS_FULL_DAY)): selector.SelectSelector(
+                                selector.SelectSelectorConfig(
+                                    options=[
+                                        {
+                                            "value": TIME_PERIODS_FULL_DAY,
+                                            "label": "🌅 Full Day (4 periods: Morning, Afternoon, Evening, Night)",
+                                        },
+                                        {
+                                            "value": TIME_PERIODS_DAWN_DUSK,
+                                            "label": "🌄 Dawn & Dusk Only (Prime fishing times: ±1hr sunrise/sunset)",
+                                        },
+                                    ],
+                                    mode="list",
+                                )
+                            ),
+                        }
+                    ),
                     errors={"base": "unknown"},
-                    description_placeholders={
-                        "info": "Choose which time periods to monitor. Dawn & Dusk focuses on the most productive fishing times."
-                    }
+                    description_placeholders={"info": "Choose which time periods to monitor. Dawn & Dusk focuses on the most productive fishing times."},
                 )
 
         return self.async_show_form(
             step_id="ocean_time_periods",
-            data_schema=vol.Schema({
-                vol.Required(
-                    CONF_TIME_PERIODS,
-                    default=TIME_PERIODS_FULL_DAY,
-                ): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=[
-                            {
-                                "value": TIME_PERIODS_FULL_DAY,
-                                "label": "🌅 Full Day (4 periods: Morning, Afternoon, Evening, Night)"
-                            },
-                            {
-                                "value": TIME_PERIODS_DAWN_DUSK,
-                                "label": "🌄 Dawn & Dusk Only (Prime fishing times: ±1hr sunrise/sunset)"
-                            },
-                        ],
-                        mode="list",
-                    )
-                ),
-            }),
-            description_placeholders={
-                "info": "Choose which time periods to monitor. Dawn & Dusk focuses on the most productive fishing times."
-            }
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_TIME_PERIODS, default=TIME_PERIODS_FULL_DAY): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[
+                                {"value": TIME_PERIODS_FULL_DAY, "label": "🌅 Full Day (4 periods: Morning, Afternoon, Evening, Night)"},
+                                {"value": TIME_PERIODS_DAWN_DUSK, "label": "🌄 Dawn & Dusk Only (Prime fishing times: ±1hr sunrise/sunset)"},
+                            ],
+                            mode="list",
+                        )
+                    ),
+                }
+            ),
+            description_placeholders={"info": "Choose which time periods to monitor. Dawn & Dusk focuses on the most productive fishing times."},
         )
 
     async def async_step_ocean_thresholds(self, user_input: dict[str, Any] | None = None) -> FlowResult:
@@ -918,217 +839,71 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
                 _LOGGER.debug("Creating ocean config entry with data keys: %s", list(final_config.keys()))
 
-                return self.async_create_entry(
-                    title=name,
-                    data=final_config,
-                )
+                return self.async_create_entry(title=name, data=final_config)
             except KeyError as ke:
                 _LOGGER.exception("Missing expected key when building final ocean config: %s", ke)
                 # Re-show thresholds form with a general error so user can try again
-                return self.async_show_form(
-                    step_id="ocean_thresholds",
-                    data_schema=vol.Schema({
-                        vol.Required(
-                            "max_wind_speed",
-                            default=25,
-                        ): selector.NumberSelector(
-                            selector.NumberSelectorConfig(
-                                min=10,
-                                max=50,
-                                step=5,
-                                unit_of_measurement="km/h",
-                                mode="slider",
-                            )
-                        ),
-                        vol.Required(
-                            "max_gust_speed",
-                            default=40,
-                        ): selector.NumberSelector(
-                            selector.NumberSelectorConfig(
-                                min=15,
-                                max=70,
-                                step=5,
-                                unit_of_measurement="km/h",
-                                mode="slider",
-                            )
-                        ),
-                        vol.Required(
-                            "max_wave_height",
-                            default=2.0,
-                        ): selector.NumberSelector(
-                            selector.NumberSelectorConfig(
-                                min=0.5,
-                                max=5.0,
-                                step=0.5,
-                                unit_of_measurement="m",
-                                mode="slider",
-                            )
-                        ),
-                        vol.Required(
-                            "min_temperature",
-                            default=5,
-                        ): selector.NumberSelector(
-                            selector.NumberSelectorConfig(
-                                min=-10,
-                                max=20,
-                                step=1,
-                                unit_of_measurement="°C",
-                            )
-                        ),
-                        vol.Required(
-                            "max_temperature",
-                            default=35,
-                        ): selector.NumberSelector(
-                            selector.NumberSelectorConfig(
-                                min=20,
-                                max=50,
-                                step=1,
-                                unit_of_measurement="°C",
-                            )
-                        ),
-                    }),
-                    errors={"base": "unknown"},
-                )
+                return self._show_ocean_thresholds_form(errors={"base": "unknown"})
             except Exception as exc:
                 _LOGGER.exception("Unhandled exception in async_step_ocean_thresholds: %s", exc)
-                return self.async_show_form(
-                    step_id="ocean_thresholds",
-                    data_schema=vol.Schema({
-                        vol.Required(
-                            "max_wind_speed",
-                            default=25,
-                        ): selector.NumberSelector(
-                            selector.NumberSelectorConfig(
-                                min=10,
-                                max=50,
-                                step=5,
-                                unit_of_measurement="km/h",
-                                mode="slider",
-                            )
-                        ),
-                        vol.Required(
-                            "max_gust_speed",
-                            default=40,
-                        ): selector.NumberSelector(
-                            selector.NumberSelectorConfig(
-                                min=15,
-                                max=70,
-                                step=5,
-                                unit_of_measurement="km/h",
-                                mode="slider",
-                            )
-                        ),
-                        vol.Required(
-                            "max_wave_height",
-                            default=2.0,
-                        ): selector.NumberSelector(
-                            selector.NumberSelectorConfig(
-                                min=0.5,
-                                max=5.0,
-                                step=0.5,
-                                unit_of_measurement="m",
-                                mode="slider",
-                            )
-                        ),
-                        vol.Required(
-                            "min_temperature",
-                            default=5,
-                        ): selector.NumberSelector(
-                            selector.NumberSelectorConfig(
-                                min=-10,
-                                max=20,
-                                step=1,
-                                unit_of_measurement="°C",
-                            )
-                        ),
-                        vol.Required(
-                            "max_temperature",
-                            default=35,
-                        ): selector.NumberSelector(
-                            selector.NumberSelectorConfig(
-                                min=20,
-                                max=50,
-                                step=1,
-                                unit_of_measurement="°C",
-                            )
-                        ),
-                    }),
-                    errors={"base": "unknown"},
-                )
+                return self._show_ocean_thresholds_form(errors={"base": "unknown"})
 
         # When showing the form for the first time, use habitat preset defaults
-        habitat = HABITAT_PRESETS.get(
-            self.ocean_config.get(CONF_HABITAT_PRESET, HABITAT_ROCKY_POINT),
-            HABITAT_PRESETS.get(HABITAT_ROCKY_POINT, {})
-        )
+        habitat = HABITAT_PRESETS.get(self.ocean_config.get(CONF_HABITAT_PRESET, HABITAT_ROCKY_POINT), HABITAT_PRESETS.get(HABITAT_ROCKY_POINT, {}))
 
         return self.async_show_form(
             step_id="ocean_thresholds",
-            data_schema=vol.Schema({
-                vol.Required(
-                    "max_wind_speed",
-                    default=habitat.get("max_wind_speed", 25),
-                ): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=10,
-                        max=50,
-                        step=5,
-                        unit_of_measurement="km/h",
-                        mode="slider",
-                    )
-                ),
-                vol.Required(
-                    "max_gust_speed",
-                    default=habitat.get("max_gust_speed", 40),
-                ): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=15,
-                        max=70,
-                        step=5,
-                        unit_of_measurement="km/h",
-                        mode="slider",
-                    )
-                ),
-                vol.Required(
-                    "max_wave_height",
-                    default=habitat.get("max_wave_height", 2.0),
-                ): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=0.5,
-                        max=5.0,
-                        step=0.5,
-                        unit_of_measurement="m",
-                        mode="slider",
-                    )
-                ),
-                vol.Required(
-                    "min_temperature",
-                    default=5,
-                ): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=-10,
-                        max=20,
-                        step=1,
-                        unit_of_measurement="°C",
-                    )
-                ),
-                vol.Required(
-                    "max_temperature",
-                    default=35,
-                ): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=20,
-                        max=50,
-                        step=1,
-                        unit_of_measurement="°C",
-                    )
-                ),
-            }),
-            description_placeholders={
-                "info": "Set safe fishing limits based on your habitat and comfort level."
-            }
+            data_schema=vol.Schema(
+                {
+                    vol.Required("max_wind_speed", default=habitat.get("max_wind_speed", 25)): selector.NumberSelector(
+                        selector.NumberSelectorConfig(min=10, max=50, step=5, unit_of_measurement="km/h", mode="slider")
+                    ),
+                    vol.Required("max_gust_speed", default=habitat.get("max_gust_speed", 40)): selector.NumberSelector(
+                        selector.NumberSelectorConfig(min=15, max=70, step=5, unit_of_measurement="km/h", mode="slider")
+                    ),
+                    vol.Required("max_wave_height", default=habitat.get("max_wave_height", 2.0)): selector.NumberSelector(
+                        selector.NumberSelectorConfig(min=0.5, max=5.0, step=0.5, unit_of_measurement="m", mode="slider")
+                    ),
+                    vol.Required("min_temperature", default=5): selector.NumberSelector(
+                        selector.NumberSelectorConfig(min=-10, max=20, step=1, unit_of_measurement="°C")
+                    ),
+                    vol.Required("max_temperature", default=35): selector.NumberSelector(
+                        selector.NumberSelectorConfig(min=20, max=50, step=1, unit_of_measurement="°C")
+                    ),
+                }
+            ),
+            description_placeholders={"info": "Set safe fishing limits based on your habitat and comfort level."},
         )
 
+    def _show_ocean_thresholds_form(self, errors: dict[str, str] | None = None) -> FlowResult:
+        """Helper to show ocean thresholds form with defaults and errors."""
+        habitat = HABITAT_PRESETS.get(self.ocean_config.get(CONF_HABITAT_PRESET, HABITAT_ROCKY_POINT), HABITAT_PRESETS.get(HABITAT_ROCKY_POINT, {}))
+        return self.async_show_form(
+            step_id="ocean_thresholds",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("max_wind_speed", default=habitat.get("max_wind_speed", 25)): selector.NumberSelector(
+                        selector.NumberSelectorConfig(min=10, max=50, step=5, unit_of_measurement="km/h", mode="slider")
+                    ),
+                    vol.Required("max_gust_speed", default=habitat.get("max_gust_speed", 40)): selector.NumberSelector(
+                        selector.NumberSelectorConfig(min=15, max=70, step=5, unit_of_measurement="km/h", mode="slider")
+                    ),
+                    vol.Required("max_wave_height", default=habitat.get("max_wave_height", 2.0)): selector.NumberSelector(
+                        selector.NumberSelectorConfig(min=0.5, max=5.0, step=0.5, unit_of_measurement="m", mode="slider")
+                    ),
+                    vol.Required("min_temperature", default=5): selector.NumberSelector(
+                        selector.NumberSelectorConfig(min=-10, max=20, step=1, unit_of_measurement="°C")
+                    ),
+                    vol.Required("max_temperature", default=35): selector.NumberSelector(
+                        selector.NumberSelectorConfig(min=20, max=50, step=1, unit_of_measurement="°C")
+                    ),
+                }
+            ),
+            errors=errors or {},
+            description_placeholders={"info": "Set safe fishing limits based on your habitat and comfort level."},
+        )
+
+    # Options flow
     @staticmethod
     @callback
     def async_get_options_flow(config_entry: config_entries.ConfigEntry) -> config_entries.OptionsFlow:
@@ -1162,44 +937,25 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
         return self.async_show_form(
             step_id="freshwater_options",
-            data_schema=vol.Schema({
-                vol.Required(
-                    CONF_NAME,
-                    default=self.config_entry.data.get(CONF_NAME, "")
-                ): str,
-                vol.Required(
-                    CONF_LATITUDE,
-                    default=self.config_entry.data.get(CONF_LATITUDE, "")
-                ): cv.latitude,
-                vol.Required(
-                    CONF_LONGITUDE,
-                    default=self.config_entry.data.get(CONF_LONGITUDE, "")
-                ): cv.longitude,
-                vol.Required(
-                    CONF_TIME_PERIODS,
-                    default=self.config_entry.data.get(CONF_TIME_PERIODS, TIME_PERIODS_FULL_DAY)
-                ): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=[
-                            {
-                                "value": TIME_PERIODS_FULL_DAY,
-                                "label": "🌅 Full Day (4 periods)"
-                            },
-                            {
-                                "value": TIME_PERIODS_DAWN_DUSK,
-                                "label": "🌄 Dawn & Dusk Only"
-                            },
-                        ],
-                        mode="dropdown",
-                    )
-                ),
-                vol.Required(
-                    CONF_USE_OPEN_METEO,
-                    default=self.config_entry.data.get(CONF_USE_OPEN_METEO, True),
-                ): selector.BooleanSelector(
-                    selector.BooleanSelectorConfig()
-                ),
-            }),
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_NAME, default=self.config_entry.data.get(CONF_NAME, "")): str,
+                    vol.Required(CONF_LATITUDE, default=self.config_entry.data.get(CONF_LATITUDE, "")): cv.latitude,
+                    vol.Required(CONF_LONGITUDE, default=self.config_entry.data.get(CONF_LONGITUDE, "")): cv.longitude,
+                    vol.Required(CONF_TIME_PERIODS, default=self.config_entry.data.get(CONF_TIME_PERIODS, TIME_PERIODS_FULL_DAY)): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[
+                                {"value": TIME_PERIODS_FULL_DAY, "label": "🌅 Full Day (4 periods)"},
+                                {"value": TIME_PERIODS_DAWN_DUSK, "label": "🌄 Dawn & Dusk Only"},
+                            ],
+                            mode="dropdown",
+                        )
+                    ),
+                    vol.Required(CONF_USE_OPEN_METEO, default=self.config_entry.data.get(CONF_USE_OPEN_METEO, True)): selector.BooleanSelector(
+                        selector.BooleanSelectorConfig()
+                    ),
+                }
+            ),
         )
 
     async def async_step_ocean_options(self, user_input: dict[str, Any] | None = None) -> FlowResult:
@@ -1211,54 +967,26 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
         return self.async_show_form(
             step_id="ocean_options",
-            data_schema=vol.Schema({
-                vol.Required(
-                    CONF_TIME_PERIODS,
-                    default=self.config_entry.data.get(CONF_TIME_PERIODS, TIME_PERIODS_FULL_DAY)
-                ): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=[
-                            {
-                                "value": TIME_PERIODS_FULL_DAY,
-                                "label": "🌅 Full Day (4 periods)"
-                            },
-                            {
-                                "value": TIME_PERIODS_DAWN_DUSK,
-                                "label": "🌄 Dawn & Dusk Only"
-                            },
-                        ],
-                        mode="dropdown",
-                    )
-                ),
-                vol.Required(
-                    "max_wind_speed",
-                    default=thresholds.get("max_wind_speed", 25),
-                ): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=10,
-                        max=50,
-                        step=5,
-                        unit_of_measurement="km/h",
-                        mode="slider",
-                    )
-                ),
-                vol.Required(
-                    "max_wave_height",
-                    default=thresholds.get("max_wave_height", 2.0),
-                ): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=0.5,
-                        max=5.0,
-                        step=0.5,
-                        unit_of_measurement="m",
-                        mode="slider",
-                    )
-                ),
-                vol.Required(
-                    CONF_USE_OPEN_METEO,
-                    default=self.config_entry.data.get(CONF_USE_OPEN_METEO, True),
-                ): selector.BooleanSelector(
-                    selector.BooleanSelectorConfig()
-                ),
-            }),
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_TIME_PERIODS, default=self.config_entry.data.get(CONF_TIME_PERIODS, TIME_PERIODS_FULL_DAY)): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[
+                                {"value": TIME_PERIODS_FULL_DAY, "label": "🌅 Full Day (4 periods)"},
+                                {"value": TIME_PERIODS_DAWN_DUSK, "label": "🌄 Dawn & Dusk Only"},
+                            ],
+                            mode="dropdown",
+                        )
+                    ),
+                    vol.Required("max_wind_speed", default=thresholds.get("max_wind_speed", 25)): selector.NumberSelector(
+                        selector.NumberSelectorConfig(min=10, max=50, step=5, unit_of_measurement="km/h", mode="slider")
+                    ),
+                    vol.Required("max_wave_height", default=thresholds.get("max_wave_height", 2.0)): selector.NumberSelector(
+                        selector.NumberSelectorConfig(min=0.5, max=5.0, step=0.5, unit_of_measurement="m", mode="slider")
+                    ),
+                    vol.Required(CONF_USE_OPEN_METEO, default=self.config_entry.data.get(CONF_USE_OPEN_METEO, True)): selector.BooleanSelector(
+                        selector.BooleanSelectorConfig()
+                    ),
+                }
+            ),
         )
