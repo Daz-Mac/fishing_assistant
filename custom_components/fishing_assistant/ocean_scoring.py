@@ -1,4 +1,4 @@
-"""Ocean fishing scoring algorithm with improved astronomical calculations."""
+"""Ocean fishing scoring algorithm with improved defensive parsing and logging."""
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List, Tuple, Any
@@ -59,7 +59,7 @@ class OceanFishingScorer(BaseScorer):
             if self.species_loader:
                 await self.species_loader.async_load_profiles()
 
-            # Load species profile
+            # Load species profile (first species or fallback)
             species_id = self.species[0] if self.species else "general_mixed"
 
             if self.species_loader:
@@ -78,7 +78,7 @@ class OceanFishingScorer(BaseScorer):
                 # Update species_profiles dict for BaseScorer
                 self.species_profiles[species_id] = self.species_profile
 
-            # Pre-load astronomical forecast
+            # Pre-load astronomical forecast if hass is available
             if self.hass:
                 await self._refresh_astro_cache()
 
@@ -93,10 +93,11 @@ class OceanFishingScorer(BaseScorer):
         """Refresh astronomical forecast cache."""
         try:
             if self.latitude is None or self.longitude is None:
-                _LOGGER.warning("No coordinates configured, using fallback astro data")
+                _LOGGER.warning("No coordinates configured, skipping astro cache refresh")
                 return
 
-            _LOGGER.info("Refreshing astronomical forecast cache")
+            _LOGGER.debug("Refreshing astronomical forecast cache for lat=%s lon=%s",
+                          self.latitude, self.longitude)
             # calculate_astronomy_forecast returns a dict keyed by ISO date strings
             cache = await calculate_astronomy_forecast(
                 self.hass,
@@ -106,7 +107,6 @@ class OceanFishingScorer(BaseScorer):
             )
             self._astro_forecast_cache = cache
             self._astro_cache_time = datetime.now()
-            # Log numeric size (works for dict or list)
             size = len(cache) if hasattr(cache, "__len__") else 0
             _LOGGER.debug("Astronomical cache refreshed with %d entries", size)
         except Exception as e:
@@ -135,12 +135,11 @@ class OceanFishingScorer(BaseScorer):
     ) -> Dict[str, Any]:
         """Calculate the fishing score with error handling and forecast support."""
         try:
-            # Call parent calculate_score
             result = super().calculate_score(
                 weather_data, astro_data, tide_data, marine_data, current_time
             )
 
-            # Add forecast if available in weather_data
+            # Attach formatted forecast when present
             if "forecast" in weather_data and isinstance(weather_data["forecast"], list):
                 result["forecast"] = self._format_forecast(
                     weather_data["forecast"], astro_data, tide_data, marine_data
@@ -149,8 +148,7 @@ class OceanFishingScorer(BaseScorer):
             return result
 
         except Exception as e:
-            _LOGGER.error(f"Error calculating ocean score: {e}", exc_info=True)
-            # Return default result
+            _LOGGER.error("Error calculating ocean score: %s", e, exc_info=True)
             return DataFormatter.format_score_result({
                 "score": 5.0,
                 "conditions_summary": "Error calculating score",
@@ -167,9 +165,9 @@ class OceanFishingScorer(BaseScorer):
         marine_data: Optional[Dict[str, Any]] = None,
         current_time: Optional[datetime] = None,
     ) -> Dict[str, float]:
-        """Calculate component scores with error handling."""
+        """Calculate component scores with defensive parsing and logging."""
         try:
-            # Format input data
+            # Format input data using DataFormatter helpers (defensive)
             weather = DataFormatter.format_weather_data(weather_data)
             astro = DataFormatter.format_astro_data(astro_data)
             tide = DataFormatter.format_tide_data(tide_data) if tide_data else None
@@ -178,13 +176,14 @@ class OceanFishingScorer(BaseScorer):
             if current_time is None:
                 current_time = datetime.now()
 
-            components = {}
+            components: Dict[str, float] = {}
 
             # Temperature Score
             temp = weather.get("temperature")
             if temp is not None:
                 components["temperature"] = self._normalize_score(self._score_temperature(temp))
             else:
+                _LOGGER.debug("Temperature missing, using neutral score")
                 components["temperature"] = 5.0
 
             # Wind Score
@@ -199,9 +198,10 @@ class OceanFishingScorer(BaseScorer):
             # Tide Score
             if tide:
                 tide_state = tide.get("state", "unknown")
-                tide_strength = tide.get("strength", 50) / 100.0
+                tide_strength = tide.get("strength", 50) / 100.0 if tide.get("strength") is not None else 0.5
                 components["tide"] = self._normalize_score(self._score_tide(tide_state, tide_strength))
             else:
+                _LOGGER.debug("Tide data missing, using neutral tide score")
                 components["tide"] = 5.0
 
             # Wave Score
@@ -210,6 +210,7 @@ class OceanFishingScorer(BaseScorer):
                 wave_height = current_marine.get("wave_height", 1.0)
                 components["waves"] = self._normalize_score(self._score_waves(wave_height))
             else:
+                _LOGGER.debug("Marine data missing, using neutral wave score")
                 components["waves"] = 5.0
 
             # Time of Day Score
@@ -219,17 +220,15 @@ class OceanFishingScorer(BaseScorer):
             components["season"] = self._normalize_score(self._score_season(current_time))
 
             # Moon Phase Score
-            moon_phase = astro.get("moon")
-            # Some callers place moon_phase under 'moon' or 'moon_phase'
+            moon_phase = astro.get("moon") if astro else None
             if moon_phase is None:
-                moon_phase = astro.get("moon_phase")
+                moon_phase = astro.get("moon_phase") if astro else None
             components["moon"] = self._normalize_score(self._score_moon(moon_phase))
 
             return components
 
         except Exception as e:
-            _LOGGER.error(f"Error in _calculate_base_score: {e}", exc_info=True)
-            # Return default scores
+            _LOGGER.error("Error in _calculate_base_score: %s", e, exc_info=True)
             return {
                 "temperature": 5.0,
                 "wind": 5.0,
@@ -243,6 +242,7 @@ class OceanFishingScorer(BaseScorer):
 
     def _get_factor_weights(self) -> Dict[str, float]:
         """Get factor weights for scoring."""
+        # Keep same balanced weights but they can be tuned later.
         return {
             "tide": 0.25,
             "wind": 0.15,
@@ -261,28 +261,56 @@ class OceanFishingScorer(BaseScorer):
         tide_data: Optional[Dict[str, Any]] = None,
         marine_data: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
-        """Format forecast data for frontend compatibility."""
-        formatted_forecast = []
+        """Format forecast data for frontend compatibility with tolerant parsing."""
+        formatted_forecast: List[Dict[str, Any]] = []
 
         for entry in forecast_data:
             try:
-                # Calculate score for this forecast entry
+                dt = self._coerce_datetime(
+                    entry.get("datetime") or entry.get("time") or entry.get("timestamp")
+                )
+                if not dt:
+                    _LOGGER.debug("Skipping forecast entry with unparseable datetime: %s", entry)
+                    continue
+
+                # Tolerant extraction of common weather fields
+                temperature = (
+                    entry.get("temperature")
+                    or entry.get("temp")
+                    or entry.get("temperature_2m")
+                    or entry.get("t")
+                )
+                wind_speed = entry.get("wind_speed") or entry.get("wind") or entry.get("windspeed")
+                wind_gust = entry.get("wind_gust") or entry.get("windspeed_gusts") or None
+                pressure = entry.get("pressure") or entry.get("mslp") or entry.get("pressure_hpa")
+                precipitation = entry.get("precipitation") or entry.get("precip") or entry.get("pop", 0)
+                cloud_cover = entry.get("cloud_cover") or entry.get("clouds") or entry.get("cloudcover", 0)
+                humidity = entry.get("humidity") or entry.get("rh", None)
+
                 forecast_weather = {
-                    "temperature": entry.get("temperature"),
-                    "wind_speed": entry.get("wind_speed"),
-                    "wind_gust": entry.get("wind_gust", entry.get("wind_speed", 0) * 1.5),
-                    "pressure": entry.get("pressure"),
-                    "precipitation": entry.get("precipitation", 0),
-                    "cloud_cover": entry.get("cloud_cover", 0),
-                    "humidity": entry.get("humidity", 50),
+                    "temperature": temperature,
+                    "wind_speed": wind_speed,
+                    "wind_gust": wind_gust or (wind_speed * 1.5 if wind_speed else 0),
+                    "pressure": pressure,
+                    "precipitation": precipitation,
+                    "cloud_cover": cloud_cover,
+                    "humidity": humidity,
                 }
+
+                # Determine astro for this forecast time if astro_data is a cache
+                astro_for_entry = astro_data
+                if isinstance(astro_data, dict):
+                    try:
+                        astro_for_entry = self._find_astro_for_time(dt) or astro_data
+                    except Exception:
+                        astro_for_entry = astro_data
 
                 # Calculate component scores
                 component_scores = self._calculate_base_score(
-                    forecast_weather, astro_data, tide_data, marine_data, entry.get("datetime")
+                    forecast_weather, astro_for_entry, tide_data, marine_data, dt
                 )
 
-                # Calculate final score
+                # Calculate final weighted score
                 weights = self._get_factor_weights()
                 score = self._weighted_average(component_scores, weights)
 
@@ -292,15 +320,15 @@ class OceanFishingScorer(BaseScorer):
                 }
 
                 formatted_forecast.append({
-                    "datetime": entry.get("datetime"),
+                    "datetime": dt.isoformat() if hasattr(dt, "isoformat") else str(dt),
                     "score": round(score, 1),
-                    "temperature": entry.get("temperature"),
-                    "wind_speed": entry.get("wind_speed"),
-                    "pressure": entry.get("pressure"),
+                    "temperature": temperature,
+                    "wind_speed": wind_speed,
+                    "pressure": pressure,
                     "component_scores": normalized_scores,
                 })
             except Exception as e:
-                _LOGGER.warning(f"Error formatting forecast entry: {e}")
+                _LOGGER.warning("Error formatting forecast entry: %s. Entry=%s", e, entry, exc_info=True)
                 continue
 
         return formatted_forecast
@@ -311,10 +339,10 @@ class OceanFishingScorer(BaseScorer):
         tide_forecast: Optional[List[Dict[str, Any]]] = None,
         marine_forecast: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
-        """Calculate fishing scores for forecast periods."""
-        forecast_scores = []
+        """Calculate fishing scores for forecast periods, aligning astro/tide/marine data."""
+        forecast_scores: List[Dict[str, Any]] = []
 
-        # Ensure astro cache is fresh
+        # Ensure astro cache is fresh (1 hour TTL)
         if self._astro_forecast_cache is None or (
             self._astro_cache_time and
             (datetime.now() - self._astro_cache_time).total_seconds() > 3600
@@ -323,25 +351,18 @@ class OceanFishingScorer(BaseScorer):
 
         for weather_data in weather_forecast:
             try:
-                # Get timestamp from weather data
-                forecast_time = weather_data.get("datetime")
+                forecast_time = self._coerce_datetime(
+                    weather_data.get("datetime") or weather_data.get("time") or weather_data.get("timestamp")
+                )
                 if not forecast_time:
+                    _LOGGER.debug("Skipping forecast item with no parseable time: %s", weather_data)
                     continue
 
-                # Find matching astro data (tolerant)
+                # Find matching astro/tide/marine entries
                 astro_data = self._find_astro_for_time(forecast_time)
+                tide_data = self._find_tide_for_time(tide_forecast, forecast_time) if tide_forecast else None
+                marine_data = self._find_marine_for_time(marine_forecast, forecast_time) if marine_forecast else None
 
-                # Find matching tide data
-                tide_data = None
-                if tide_forecast:
-                    tide_data = self._find_tide_for_time(tide_forecast, forecast_time)
-
-                # Find matching marine data
-                marine_data = None
-                if marine_forecast:
-                    marine_data = self._find_marine_for_time(marine_forecast, forecast_time)
-
-                # Calculate score
                 score_result = self.calculate_score(
                     weather_data=weather_data,
                     astro_data=astro_data,
@@ -350,8 +371,7 @@ class OceanFishingScorer(BaseScorer):
                     current_time=forecast_time
                 )
 
-                # Add timestamp to result
-                score_result["datetime"] = forecast_time
+                score_result["datetime"] = forecast_time.isoformat()
                 forecast_scores.append(score_result)
 
             except Exception as e:
@@ -363,13 +383,12 @@ class OceanFishingScorer(BaseScorer):
     def _find_astro_for_time(self, target_time: datetime) -> Dict[str, Any]:
         """Find astronomical data for a specific time.
 
-        Supports both dict keyed by ISO date strings and legacy list-of-dicts.
-        Returns a dict with parsed datetime fields where possible.
+        Supports dict keyed by ISO date strings and legacy list-of-dicts.
+        Returns a parsed astro dict or empty dict.
         """
         if not self._astro_forecast_cache or not target_time:
             return {}
 
-        # Normalized target date string
         try:
             target_date_iso = target_time.date().isoformat()
         except Exception:
@@ -382,7 +401,7 @@ class OceanFishingScorer(BaseScorer):
             astro_entry = cache.get(target_date_iso)
             if astro_entry:
                 return self._parse_astro_entry(astro_entry)
-            # fallback: try nearest date key (first entry)
+            # fallback: nearest — choose first available
             try:
                 first_key = sorted(cache.keys())[0]
                 return self._parse_astro_entry(cache[first_key])
@@ -395,7 +414,6 @@ class OceanFishingScorer(BaseScorer):
                 astro_date = astro_data.get("date")
                 if astro_date is None:
                     continue
-                # astro_date may be a date/datetime or an ISO string
                 if isinstance(astro_date, str):
                     if astro_date == target_date_iso:
                         return self._parse_astro_entry(astro_data)
@@ -408,11 +426,10 @@ class OceanFishingScorer(BaseScorer):
             # fallback to first
             return self._parse_astro_entry(cache[0]) if cache else {}
 
-        # Unknown cache shape
         return {}
 
     def _parse_astro_entry(self, astro_entry: Dict[str, Any]) -> Dict[str, Any]:
-        """Return astro_entry but parse ISO datetime strings to datetime objects where possible."""
+        """Parse astro entry, converting ISO strings to datetime where possible."""
         if not isinstance(astro_entry, dict):
             return {}
 
@@ -424,82 +441,63 @@ class OceanFishingScorer(BaseScorer):
             if isinstance(v, datetime):
                 return v
             if isinstance(v, str):
-                # Try ISO parse
                 try:
                     return datetime.fromisoformat(v)
                 except Exception:
-                    # Try trimming timezone Z -> +00:00
                     try:
                         return datetime.fromisoformat(v.replace("Z", "+00:00"))
                     except Exception:
                         return None
             return None
 
-        # Parse sunrise/sunset and moon event times if present
         for key in ("sunrise", "sunset", "moonrise", "moonset", "moon_transit", "moon_underfoot"):
             if key in result:
                 parsed = _ensure_dt(result.get(key))
                 if parsed:
                     result[key] = parsed
-                # if parsing fails, leave original; caller will handle missing types
 
-        # moon_phase might be fractional or int; coerce to float if possible
         if "moon_phase" in result:
             try:
                 result["moon_phase"] = float(result["moon_phase"]) if result["moon_phase"] is not None else None
             except Exception:
                 result["moon_phase"] = None
 
+        # Some callers use 'moon' as key
+        if "moon" in result and "moon_phase" not in result:
+            try:
+                result["moon_phase"] = float(result.get("moon"))
+            except Exception:
+                pass
+
         return result
 
     def _find_tide_for_time(
         self, tide_forecast: List[Dict[str, Any]], target_time: datetime
     ) -> Optional[Dict[str, Any]]:
-        """Find tide data closest to target time.
-
-        This function is tolerant: tide_forecast items can be dicts with a 'datetime'
-        key or simple ISO datetime strings.
-        """
+        """Find tide data closest to target time (tolerant to shapes)."""
         if not tide_forecast:
             return None
 
-        # helper to coerce possible string target_time
-        def _coerce_dt(v):
-            if isinstance(v, datetime):
-                return v
-            if isinstance(v, str):
-                try:
-                    return datetime.fromisoformat(v)
-                except Exception:
-                    try:
-                        return datetime.fromisoformat(v.replace("Z", "+00:00"))
-                    except Exception:
-                        return None
+        tgt = self._coerce_datetime(target_time)
+        if not tgt:
             return None
-
-        tgt = _coerce_dt(target_time) or target_time
-        if isinstance(tgt, datetime) and tgt.tzinfo is not None:
+        if tgt.tzinfo is not None:
             tgt = tgt.replace(tzinfo=None)
 
         closest_tide = None
         min_diff = None
 
         for item in tide_forecast:
-            # Accept dict-like or raw timestamp strings
+            tide_item = item if isinstance(item, dict) else None
             tide_time = None
-            tide_item = None
-
             if isinstance(item, dict):
-                tide_item = item
                 tide_time = item.get("datetime") or item.get("timestamp") or item.get("time")
             else:
-                # item might be an ISO string or timestamp
                 tide_time = item
 
-            tide_dt = _coerce_dt(tide_time)
+            tide_dt = self._coerce_datetime(tide_time)
             if tide_dt is None:
                 continue
-
             if tide_dt.tzinfo is not None:
                 tide_dt = tide_dt.replace(tzinfo=None)
 
@@ -510,7 +508,6 @@ class OceanFishingScorer(BaseScorer):
 
             if min_diff is None or time_diff < min_diff:
                 min_diff = time_diff
-                # prefer returning the original dict if present
                 closest_tide = tide_item if tide_item is not None else {"datetime": tide_dt}
 
         return closest_tide
@@ -518,52 +515,30 @@ class OceanFishingScorer(BaseScorer):
     def _find_marine_for_time(
         self, marine_forecast: List[Dict[str, Any]], target_time: datetime
     ) -> Optional[Dict[str, Any]]:
-        """Find marine data closest to target time.
-
-        Tolerant of items that are dicts with 'datetime'/'timestamp' keys or bare ISO strings.
-        Returns a dict representing the matched marine entry.
-        """
+        """Find marine data closest to target time."""
         if not marine_forecast:
             return None
 
-        # helper to coerce possible string target_time
-        def _coerce_dt(v):
-            if isinstance(v, datetime):
-                return v
-            if isinstance(v, str):
-                try:
-                    return datetime.fromisoformat(v)
-                except Exception:
-                    try:
-                        return datetime.fromisoformat(v.replace("Z", "+00:00"))
-                    except Exception:
-                        return None
+        tgt = self._coerce_datetime(target_time)
+        if not tgt:
             return None
-
-        tgt = _coerce_dt(target_time) or target_time
-        if isinstance(tgt, datetime) and tgt.tzinfo is not None:
+        if tgt.tzinfo is not None:
             tgt = tgt.replace(tzinfo=None)
 
         closest_marine = None
         min_diff = None
 
         for item in marine_forecast:
+            marine_item = item if isinstance(item, dict) else None
             marine_time = None
-            marine_item = None
-
             if isinstance(item, dict):
-                marine_item = item
-                # common keys that may hold timestamp
                 marine_time = item.get("datetime") or item.get("timestamp") or item.get("time")
             else:
-                # item may just be an ISO date/time string
                 marine_time = item
 
-            marine_dt = _coerce_dt(marine_time)
+            marine_dt = self._coerce_datetime(marine_time)
             if marine_dt is None:
-                # Nothing parseable for this item
                 continue
-
             if marine_dt.tzinfo is not None:
                 marine_dt = marine_dt.replace(tzinfo=None)
 
@@ -574,14 +549,40 @@ class OceanFishingScorer(BaseScorer):
 
             if min_diff is None or time_diff < min_diff:
                 min_diff = time_diff
-                # prefer returning the original dict if we have it; otherwise wrap minimal info
                 closest_marine = marine_item if marine_item is not None else {"datetime": marine_dt}
 
         return closest_marine
 
+    @staticmethod
+    def _coerce_datetime(v: Any) -> Optional[datetime]:
+        """Coerce various timestamp types (datetime, ISO string) into datetime or return None."""
+        if v is None:
+            return None
+        if isinstance(v, datetime):
+            return v
+        if isinstance(v, str):
+            try:
+                return datetime.fromisoformat(v)
+            except Exception:
+                try:
+                    return datetime.fromisoformat(v.replace("Z", "+00:00"))
+                except Exception:
+                    # Try common formatting fallbacks
+                    try:
+                        # As a last resort, try parsing date-only strings
+                        return datetime.strptime(v, "%Y-%m-%d")
+                    except Exception:
+                        return None
+        # Do not coerce numeric timestamps here to avoid timezone/epoch ambiguity
+        return None
+
     def _score_temperature(self, temperature: float) -> float:
-        """Score based on temperature."""
-        # Ocean fishing is less temperature-sensitive than freshwater
+        """Score based on temperature (ocean less sensitive)."""
+        try:
+            temperature = float(temperature)
+        except (ValueError, TypeError):
+            return 5.0
+
         if 10 <= temperature <= 25:
             return 10.0
         elif 5 <= temperature <= 30:
@@ -591,6 +592,15 @@ class OceanFishingScorer(BaseScorer):
 
     def _score_wind(self, wind_speed: float, wind_gust: float) -> float:
         """Score based on wind conditions."""
+        try:
+            wind_speed = float(wind_speed or 0)
+        except (ValueError, TypeError):
+            wind_speed = 0.0
+        try:
+            wind_gust = float(wind_gust or wind_speed)
+        except (ValueError, TypeError):
+            wind_gust = wind_speed
+
         if wind_speed < 5:
             return 6.0  # Too calm
         elif wind_speed < 15:
@@ -604,21 +614,26 @@ class OceanFishingScorer(BaseScorer):
 
     def _score_pressure(self, pressure: float) -> float:
         """Score based on barometric pressure."""
+        try:
+            pressure = float(pressure)
+        except (ValueError, TypeError):
+            return 5.0
+
         if 1013 <= pressure <= 1020:
             return 10.0
         elif 1008 <= pressure < 1013:
-            return 8.0  # Slightly low, often good
+            return 8.0
         elif 1020 < pressure <= 1025:
-            return 7.0  # Slightly high
+            return 7.0
         elif 1000 <= pressure < 1008:
-            return 6.0  # Low pressure
+            return 6.0
         elif pressure > 1025:
-            return 5.0  # High pressure
+            return 5.0
         else:
-            return 4.0  # Very low pressure
+            return 4.0
 
     def _score_tide(self, tide_state: str, tide_strength: float) -> float:
-        """Score based on tide conditions."""
+        """Score based on tide conditions and species preference."""
         if not self.species_profile:
             return 5.0
 
@@ -665,7 +680,7 @@ class OceanFishingScorer(BaseScorer):
         return 5.0
 
     def _score_waves(self, wave_height: float) -> float:
-        """Score based on wave conditions."""
+        """Score based on wave conditions with species preferences."""
         try:
             wave_height = max(0.0, float(wave_height))
         except (ValueError, TypeError):
@@ -707,14 +722,13 @@ class OceanFishingScorer(BaseScorer):
         else:  # any
             score = 7.0
 
-        # Apply wave bonus if species benefits from waves
         if wave_bonus and wave_height > 1.0:
             score = min(10.0, score + 2.0)
 
         return score
 
     def _score_cloud_cover(self, cloud_cover: float) -> float:
-        """Score based on cloud cover."""
+        """Score based on cloud cover and species cloud preference."""
         cloud_bonus = self.species_profile.get("cloud_bonus", 0.5) if self.species_profile else 0.5
         try:
             cloud_bonus = max(0.0, min(1.0, float(cloud_bonus)))
@@ -722,11 +736,10 @@ class OceanFishingScorer(BaseScorer):
         except (ValueError, TypeError):
             return 5.0
 
-        # Base score + cloud preference
-        return 5.0 + (cloud_cover / 100 * cloud_bonus * 5.0)
+        return 5.0 + (cloud_cover / 100.0 * cloud_bonus * 5.0)
 
     def _score_moon(self, moon_phase: Optional[float]) -> float:
-        """Score based on moon phase."""
+        """Score based on moon phase (0..1)."""
         if moon_phase is None:
             return 5.0
 
@@ -735,7 +748,7 @@ class OceanFishingScorer(BaseScorer):
         except (ValueError, TypeError):
             return 5.0
 
-        # New moon (0) and full moon (0.5) are typically best
+        # New moon (0) and full moon (~0.5) are often best
         if moon_phase < 0.1 or moon_phase > 0.9:
             return 10.0  # New moon
         elif 0.4 < moon_phase < 0.6:
@@ -746,7 +759,7 @@ class OceanFishingScorer(BaseScorer):
             return 7.0  # In between
 
     def _score_time_of_day(self, current_time: datetime, astro: Dict[str, Any]) -> float:
-        """Score based on time of day."""
+        """Score based on time of day and species light preference."""
         light_condition = self._determine_light_condition(astro, current_time)
 
         if not self.species_profile:
@@ -766,13 +779,13 @@ class OceanFishingScorer(BaseScorer):
         return score_map.get(light_pref, {}).get(light_condition, 5.0)
 
     def _score_season(self, current_time: datetime) -> float:
-        """Score based on season/active months."""
+        """Score based on season/active months in species profile."""
         if not self.species_profile or not current_time:
             return 5.0
 
         try:
             current_month = current_time.month
-        except AttributeError:
+        except Exception:
             return 5.0
 
         active_months = self.species_profile.get("active_months", list(range(1, 13)))
@@ -802,7 +815,7 @@ class OceanFishingScorer(BaseScorer):
     def _determine_light_condition(
         self, astro_data: Dict, current_time: datetime = None
     ) -> str:
-        """Determine light condition for a specific time."""
+        """Determine light condition for a specific time with fallbacks."""
         if current_time is None:
             current_time = datetime.now()
 
@@ -812,7 +825,6 @@ class OceanFishingScorer(BaseScorer):
         sunrise = astro_data.get("sunrise")
         sunset = astro_data.get("sunset")
 
-        # If sunrise/sunset are strings, try to parse
         def _ensure_dt(v):
             if v is None:
                 return None
@@ -835,7 +847,6 @@ class OceanFishingScorer(BaseScorer):
             return self._fallback_light_condition(current_time)
 
         try:
-            # Normalize tzinfo for comparison
             if current_time.tzinfo is not None:
                 current_time = current_time.replace(tzinfo=None)
             if sunrise_dt.tzinfo is not None:
@@ -843,7 +854,6 @@ class OceanFishingScorer(BaseScorer):
             if sunset_dt.tzinfo is not None:
                 sunset_dt = sunset_dt.replace(tzinfo=None)
 
-            # Calculate dawn and dusk periods (30 min before/after)
             dawn_start = sunrise_dt - timedelta(minutes=30)
             dawn_end = sunrise_dt + timedelta(minutes=30)
             dusk_start = sunset_dt - timedelta(minutes=30)
@@ -862,8 +872,8 @@ class OceanFishingScorer(BaseScorer):
             return self._fallback_light_condition(current_time)
 
     def _fallback_light_condition(self, current_time: datetime) -> str:
-        """Fallback light condition based on hour."""
-        hour = current_time.hour
+        """Fallback light condition based on hour of day."""
+        hour = getattr(current_time, "hour", 12)
         if 6 <= hour < 8:
             return LIGHT_DAWN
         elif 8 <= hour < 18:
@@ -876,11 +886,7 @@ class OceanFishingScorer(BaseScorer):
     def check_safety(
         self, weather_data: Dict, marine_data: Dict
     ) -> Tuple[str, List[str]]:
-        """Check if conditions are safe for fishing.
-
-        Returns:
-            tuple: (safety_status, list of reasons)
-        """
+        """Assess safety for fishing, returning ('safe'|'caution'|'unsafe'|'unknown', reasons)."""
         if not weather_data and not marine_data:
             return "unknown", ["Insufficient data to assess safety"]
 
@@ -893,14 +899,14 @@ class OceanFishingScorer(BaseScorer):
 
         wind_speed = weather_data.get("wind_speed", 0) if weather_data else 0
         wind_gust = weather_data.get("wind_gust", wind_speed) if weather_data else wind_speed
-        wave_height = marine_data.get("current", {}).get("wave_height", 0) if marine_data else 0
-        precipitation = weather_data.get("precipitation_probability", 0) if weather_data else 0
+        wave_height = (marine_data.get("current", {}) or {}).get("wave_height", 0) if marine_data else 0
+        precipitation = weather_data.get("precipitation_probability", weather_data.get("pop", 0)) if weather_data else 0
 
         max_wind = habitat.get("max_wind_speed", 30)
         max_gust = habitat.get("max_gust_speed", 45)
         max_wave = habitat.get("max_wave_height", 2.5)
 
-        reasons = []
+        reasons: List[str] = []
         unsafe_count = 0
         caution_count = 0
 
@@ -912,12 +918,11 @@ class OceanFishingScorer(BaseScorer):
                 unsafe_count += 1
             elif wind_speed_val > max_wind * 0.8:
                 reasons.append(
-                    f"Strong wind: {round(wind_speed_val)} km/h "
-                    f"(caution at {round(max_wind * 0.8)})"
+                    f"Strong wind: {round(wind_speed_val)} km/h (caution at {round(max_wind * 0.8)})"
                 )
                 caution_count += 1
         except (ValueError, TypeError):
-            pass
+            _LOGGER.debug("Unable to parse wind_speed for safety check: %s", wind_speed)
 
         # Check wind gusts
         try:
@@ -927,12 +932,11 @@ class OceanFishingScorer(BaseScorer):
                 unsafe_count += 1
             elif wind_gust_val > max_gust * 0.8:
                 reasons.append(
-                    f"Strong gusts: {round(wind_gust_val)} km/h "
-                    f"(caution at {round(max_gust * 0.8)})"
+                    f"Strong gusts: {round(wind_gust_val)} km/h (caution at {round(max_gust * 0.8)})"
                 )
                 caution_count += 1
         except (ValueError, TypeError):
-            pass
+            _LOGGER.debug("Unable to parse wind_gust for safety check: %s", wind_gust)
 
         # Check wave height
         try:
@@ -942,12 +946,11 @@ class OceanFishingScorer(BaseScorer):
                 unsafe_count += 1
             elif wave_height_val > max_wave * 0.8:
                 reasons.append(
-                    f"Large waves: {round(wave_height_val, 1)}m "
-                    f"(caution at {round(max_wave * 0.8, 1)}m)"
+                    f"Large waves: {round(wave_height_val, 1)}m (caution at {round(max_wave * 0.8, 1)}m)"
                 )
                 caution_count += 1
         except (ValueError, TypeError):
-            pass
+            _LOGGER.debug("Unable to parse wave_height for safety check: %s", wave_height)
 
         # Check precipitation
         try:
@@ -959,9 +962,8 @@ class OceanFishingScorer(BaseScorer):
                 reasons.append(f"Rain likely: {int(precip_val)}%")
                 caution_count += 1
         except (ValueError, TypeError):
-            pass
+            _LOGGER.debug("Unable to parse precipitation for safety check: %s", precipitation)
 
-        # Determine overall safety status
         if unsafe_count > 0:
             return "unsafe", reasons
         elif caution_count > 0:
