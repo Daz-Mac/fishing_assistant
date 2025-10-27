@@ -134,6 +134,7 @@ HABITAT_PRESETS = {
         "max_wind_speed": 35,  # km/h
         "max_gust_speed": 50,  # km/h (estimated from wind)
         "max_wave": 0.2,  # meters (minimal waves in ponds)
+        "max_wave_height": 0.2,  # meters (alias for max_wave)
         "wind_weight": 0.1,
         "safety_critical": False,
     },
