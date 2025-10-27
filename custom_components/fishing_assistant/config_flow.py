@@ -264,18 +264,23 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             default_use_open = user_input.get(CONF_USE_OPEN_METEO, default_use_open)
             default_weather = user_input.get(CONF_WEATHER_ENTITY, default_weather)
 
-        # Build weather entity options list
-        weather_entities = [s.entity_id for s in self.hass.states.async_all("weather")]
-        weather_options = [{"value": e} for e in weather_entities]
+        # Build weather entity options list with labels
+        weather_states = self.hass.states.async_all("weather")
+        weather_options: list[dict[str, str]] = []
+        for s in weather_states:
+            entity_id = s.entity_id
+            friendly = s.attributes.get("friendly_name") or entity_id
+            # Provide both friendly name and entity id in the label for clarity
+            weather_options.append({"value": entity_id, "label": f"{friendly} ({entity_id})"})
 
         # If Open-Meteo is the default/selected, allow an explicit empty option so the selector validates
         if default_use_open:
-            weather_options.insert(0, {"value": ""})
+            weather_options.insert(0, {"value": "", "label": "Use Open‑Meteo / None"})
 
         # Ensure default_weather is valid for the selector options; otherwise choose empty if open mete0 is used
         option_values = {opt["value"] for opt in weather_options}
         if default_weather not in option_values:
-            default_weather = "" if default_use_open else (weather_entities[0] if weather_entities else "")
+            default_weather = "" if default_use_open else (weather_states[0].entity_id if weather_states else "")
 
         return vol.Schema(
             {
@@ -669,20 +674,24 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             default_use_open = user_input.get(CONF_USE_OPEN_METEO, default_use_open)
             default_weather = user_input.get(CONF_WEATHER_ENTITY, default_weather)
 
-        # Build weather entity options from current HA states
-        weather_entities = [s.entity_id for s in self.hass.states.async_all("weather")]
-        weather_options = [{"value": e} for e in weather_entities]
+        # Build weather entity options from current HA states (include friendly labels)
+        weather_states = self.hass.states.async_all("weather")
+        weather_options: list[dict[str, str]] = []
+        for s in weather_states:
+            entity_id = s.entity_id
+            friendly = s.attributes.get("friendly_name") or entity_id
+            weather_options.append({"value": entity_id, "label": f"{friendly} ({entity_id})"})
 
         # If Open‑Meteo is enabled (or default is enabled) add an explicit "none" option
         # so the selector can be empty and still validate.
         if default_use_open:
-            weather_options.insert(0, {"value": ""})
+            weather_options.insert(0, {"value": "", "label": "Use Open‑Meteo / None"})
 
         # Ensure the default is valid for the selector. If it's not present, use an empty value
         # (allowed when Open‑Meteo is on). This prevents voluptuous complaining the default isn't in options.
         option_values = {opt["value"] for opt in weather_options}
         if default_weather not in option_values:
-            default_weather = "" if default_use_open else (weather_entities[0] if weather_entities else "")
+            default_weather = "" if default_use_open else (weather_states[0].entity_id if weather_states else "")
 
         return vol.Schema(
             {
