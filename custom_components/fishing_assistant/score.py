@@ -1,5 +1,7 @@
 """Freshwater fishing scoring algorithm with defensive parsing and tolerant forecast handling."""
 
+from __future__ import annotations
+
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, List, Any
@@ -21,7 +23,7 @@ class FreshwaterFishingScorer(BaseScorer):
         latitude: float,
         longitude: float,
         species: List[str],
-        species_profiles: dict[str, Any],
+        species_profiles: Dict[str, Any],
         body_type: Optional[str] = None,
         species_loader: Optional[SpeciesLoader] = None,
     ):
@@ -41,19 +43,22 @@ class FreshwaterFishingScorer(BaseScorer):
         self.body_type = body_type or "lake"
         self.species_loader = species_loader
 
-        # Get species profile
-        if self.species_name in species_profiles:
-            self.species_profile = species_profiles[self.species_name]
-        elif species_loader:
-            self.species_profile = species_loader.get_species(self.species_name) or {}
-            if self.species_profile:
-                self.species_profiles[self.species_name] = self.species_profile
-        else:
-            self.species_profile = {}
+        # Get species profile (defensive)
+        self.species_profile: Dict[str, Any] = {}
+        try:
+            if self.species_name in (species_profiles or {}):
+                self.species_profile = species_profiles[self.species_name] or {}
+            elif species_loader:
+                # species_loader.get_species may return None or dict
+                prof = species_loader.get_species(self.species_name)
+                if isinstance(prof, dict):
+                    self.species_profile = prof
+                    species_profiles[self.species_name] = prof
+        except Exception:
+            _LOGGER.exception("Failed to load species profile for %s", self.species_name)
 
         if not self.species_profile:
-            _LOGGER.warning("Species profile not found: %s", self.species_name)
-            self.species_profile = {}
+            _LOGGER.debug("Species profile not found or empty for: %s", self.species_name)
 
     def calculate_score(
         self,
@@ -65,38 +70,36 @@ class FreshwaterFishingScorer(BaseScorer):
     ) -> Dict[str, Any]:
         """Calculate the fishing score with error handling and forecast support.
 
-        Args:
-            weather_data: Raw weather data dictionary
-            astro_data: Raw astronomical data dictionary
-            tide_data: Optional raw tide data dictionary
-            marine_data: Optional raw marine data dictionary
-            current_time: Optional datetime object for time-based scoring
-
-        Returns:
-            ScoringResult with score, breakdown, component scores, and forecast
+        Returns a ScoringResult-like dict (DataFormatter.format_score_result used to normalize on errors).
         """
         try:
-            # Call parent calculate_score (handles formatting and final packaging)
+            # Parent handles normalization, weighted average, and summary formatting.
             result = super().calculate_score(
                 weather_data, astro_data, tide_data, marine_data, current_time
             )
 
-            # If weather_data contains a forecast list, attach a formatted forecast
+            # Ensure we have a dict result
+            if not isinstance(result, dict):
+                _LOGGER.debug("Parent scorer returned non-dict; coercing to formatted default")
+                return DataFormatter.format_score_result(result)
+
+            # Attach formatted forecast if present on the provided weather_data (some providers embed forecast)
             if isinstance(weather_data, dict) and "forecast" in weather_data and isinstance(
                 weather_data["forecast"], list
             ):
                 try:
-                    result["forecast"] = self._format_forecast(
-                        weather_data["forecast"], astro_data
-                    )
+                    formatted = self._format_forecast(weather_data["forecast"], astro_data or {})
+                    # Only attach non-empty forecast
+                    if formatted:
+                        result["forecast"] = formatted
                 except Exception as exc:
                     _LOGGER.debug("Failed to format embedded forecast: %s", exc, exc_info=True)
 
             return result
 
         except Exception as e:
-            _LOGGER.error("Error calculating freshwater score: %s", e, exc_info=True)
-            # Return default result
+            _LOGGER.exception("Error calculating freshwater score: %s", e)
+            # Return a normalized default result
             return DataFormatter.format_score_result(
                 {
                     "score": 5.0,
@@ -116,67 +119,59 @@ class FreshwaterFishingScorer(BaseScorer):
     ) -> Dict[str, float]:
         """Calculate component scores with defensive parsing."""
         try:
-            # Format input data defensively
+            # Format input data defensively (ensures numeric types and datetime strings)
             weather = DataFormatter.format_weather_data(weather_data or {})
             astro = DataFormatter.format_astro_data(astro_data or {})
 
             if current_time is None:
                 current_time = dt_util.now()
+            else:
+                # prefer timezone-aware UTC for internal calculations
+                if isinstance(current_time, datetime):
+                    if current_time.tzinfo is None:
+                        current_time = current_time.replace(tzinfo=timezone.utc)
+                    current_time = dt_util.as_utc(current_time)
 
             components: Dict[str, float] = {}
 
             # Temperature Score
             temp = weather.get("temperature")
             if temp is not None:
-                components["temperature"] = self._normalize_score(
-                    self._score_temperature(temp)
-                )
+                components["temperature"] = self._normalize_score(self._score_temperature(temp))
             else:
                 _LOGGER.debug("Temperature missing; using neutral temperature score")
                 components["temperature"] = 5.0
 
             # Wind Score
-            wind_speed = weather.get("wind_speed", 0)
-            wind_gust = weather.get("wind_gust", wind_speed)
-            components["wind"] = self._normalize_score(
-                self._score_wind(wind_speed, wind_gust)
-            )
+            wind_speed = weather.get("wind_speed") or 0.0
+            wind_gust = weather.get("wind_gust") or wind_speed or 0.0
+            components["wind"] = self._normalize_score(self._score_wind(wind_speed, wind_gust))
 
             # Pressure Score
-            pressure = weather.get("pressure", 1013)
-            components["pressure"] = self._normalize_score(
-                self._score_pressure(pressure)
-            )
+            pressure = weather.get("pressure") or 1013.0
+            components["pressure"] = self._normalize_score(self._score_pressure(pressure))
 
             # Cloud Cover Score
-            cloud_cover = weather.get("cloud_cover", 50)
-            components["clouds"] = self._normalize_score(
-                self._score_cloud_cover(cloud_cover)
-            )
+            cloud_cover = weather.get("cloud_cover") or 50.0
+            components["clouds"] = self._normalize_score(self._score_cloud_cover(cloud_cover))
 
             # Time of Day Score
-            components["time"] = self._normalize_score(
-                self._score_time_of_day(current_time, astro)
-            )
+            components["time"] = self._normalize_score(self._score_time_of_day(current_time, astro))
 
             # Season Score
-            components["season"] = self._normalize_score(
-                self._score_season(current_time)
-            )
+            components["season"] = self._normalize_score(self._score_season(current_time))
 
             # Moon Phase Score - tolerant keys
             moon_phase = None
             if isinstance(astro, dict):
                 moon_phase = astro.get("moon_phase") or astro.get("moon")
-            components["moon"] = self._normalize_score(
-                self._score_moon(moon_phase)
-            )
+            components["moon"] = self._normalize_score(self._score_moon(moon_phase))
 
             return components
 
         except Exception as e:
-            _LOGGER.error("Error in _calculate_base_score: %s", e, exc_info=True)
-            # Return default scores
+            _LOGGER.exception("Error in _calculate_base_score: %s", e)
+            # Return sensible defaults if something goes wrong
             return {
                 "temperature": 5.0,
                 "wind": 5.0,
@@ -205,22 +200,24 @@ class FreshwaterFishingScorer(BaseScorer):
         """Format forecast data for frontend compatibility with tolerant parsing.
 
         Accepts multiple common field names and ensures datetime parsing.
+        Produces per-entry scores consistent with other scorers (component scores 0–10).
         """
         formatted_forecast: List[Dict[str, Any]] = []
 
         for entry in (forecast_data or []):
+            if not isinstance(entry, dict):
+                _LOGGER.debug("Skipping non-dict forecast entry: %r", entry)
+                continue
             try:
                 # Determine timestamp from common keys
                 dt = self._coerce_datetime(
                     entry.get("datetime") or entry.get("time") or entry.get("timestamp")
                 )
                 if not dt:
-                    _LOGGER.debug(
-                        "Skipping forecast entry with unparseable datetime: %s", entry
-                    )
+                    _LOGGER.debug("Skipping forecast entry with unparseable datetime: %s", entry)
                     continue
 
-                # Accept alternative naming used by various sources (Open-Meteo, other APIs)
+                # Accept alternative naming used by various sources
                 temperature = (
                     entry.get("temperature")
                     or entry.get("temp")
@@ -235,6 +232,7 @@ class FreshwaterFishingScorer(BaseScorer):
                 wind_gust = (
                     entry.get("wind_gust")
                     or entry.get("windspeed_gusts")
+                    or entry.get("gust")
                     or None
                 )
                 pressure = (
@@ -256,23 +254,22 @@ class FreshwaterFishingScorer(BaseScorer):
                 )
                 humidity = entry.get("humidity") or entry.get("rh") or None
 
-                # Ensure numeric conversions where sensible (DataFormatter will further coerce)
-                try:
-                    ws_val = float(wind_speed) if wind_speed is not None else 0.0
-                except Exception:
-                    ws_val = 0.0
-
-                forecast_weather = {
+                # Build a small weather block and normalize via DataFormatter
+                forecast_weather_raw = {
                     "temperature": temperature,
-                    "wind_speed": ws_val,
-                    "wind_gust": wind_gust if wind_gust is not None else (ws_val * 1.5 if ws_val else 0.0),
+                    "wind_speed": wind_speed,
+                    "wind_gust": wind_gust,
                     "pressure": pressure,
                     "precipitation": precipitation,
                     "cloud_cover": cloud_cover,
                     "humidity": humidity,
+                    "datetime": dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 }
 
-                # Use astro_data per-entry if provided, otherwise use supplied astro_data
+                # Normalize numerics/datetime
+                forecast_weather = DataFormatter.format_weather_data(forecast_weather_raw)
+
+                # Use astro_data per-entry if provided; otherwise use supplied astro_data
                 astro_for_entry = entry.get("astro") or astro_data or {}
 
                 # Calculate component scores (pass dt as current_time)
@@ -280,22 +277,20 @@ class FreshwaterFishingScorer(BaseScorer):
                     forecast_weather, astro_for_entry, None, None, dt
                 )
 
-                # Calculate final score with weights
+                # Calculate final score with weights (will be 0..10)
                 weights = self._get_factor_weights()
                 score = self._weighted_average(component_scores, weights)
 
-                # Normalize component scores for frontend (0-100)
-                normalized_scores = {
-                    key: round(float(value) * 10.0, 1) for key, value in component_scores.items()
-                }
+                # Ensure component scores are numeric 0..10 and presentable
+                normalized_scores = {key: round(float(value or 0.0), 1) for key, value in component_scores.items()}
 
                 formatted_forecast.append(
                     {
-                        "datetime": dt.isoformat(),
-                        "score": round(score, 1),
-                        "temperature": temperature,
-                        "wind_speed": ws_val,
-                        "pressure": pressure,
+                        "datetime": dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "score": round(float(score), 1),
+                        "temperature": forecast_weather.get("temperature"),
+                        "wind_speed": forecast_weather.get("wind_speed"),
+                        "pressure": forecast_weather.get("pressure"),
                         "component_scores": normalized_scores,
                     }
                 )
@@ -320,6 +315,9 @@ class FreshwaterFishingScorer(BaseScorer):
         forecast_scores: List[Dict[str, Any]] = []
 
         for weather_data in (weather_forecast or []):
+            if not isinstance(weather_data, dict):
+                _LOGGER.debug("Skipping non-dict weather forecast item: %r", weather_data)
+                continue
             try:
                 # Coerce timestamp from multiple possible fields
                 forecast_time = self._coerce_datetime(
@@ -333,7 +331,7 @@ class FreshwaterFishingScorer(BaseScorer):
                     )
                     continue
 
-                # Prefer astro included in the forecast entry, otherwise use provided astro
+                # Prefer astro included in the forecast entry, otherwise empty dict
                 astro_data = weather_data.get("astro", {}) or {}
 
                 score_result = self.calculate_score(
@@ -344,12 +342,15 @@ class FreshwaterFishingScorer(BaseScorer):
                     current_time=forecast_time,
                 )
 
-                # Add timestamp to result in ISO format (ensure not to overwrite existing)
-                score_result["datetime"] = forecast_time.isoformat()
+                # Ensure result is a dict and attach a consistent ISO-Z datetime
+                if not isinstance(score_result, dict):
+                    score_result = DataFormatter.format_score_result(score_result)
+
+                score_result["datetime"] = forecast_time.strftime("%Y-%m-%dT%H:%M:%SZ")
                 forecast_scores.append(score_result)
 
             except Exception as e:
-                _LOGGER.error("Error calculating forecast score: %s", e, exc_info=True)
+                _LOGGER.exception("Error calculating forecast score: %s", e)
                 continue
 
         return forecast_scores
@@ -361,7 +362,11 @@ class FreshwaterFishingScorer(BaseScorer):
         except (ValueError, TypeError):
             return 5.0
 
-        temp_range = self.species_profile.get("temp_range") or self.species_profile.get("temperature_range") or [5, 30]
+        temp_range = (
+            self.species_profile.get("temp_range")
+            or self.species_profile.get("temperature_range")
+            or [5, 30]
+        )
         if isinstance(temp_range, (list, tuple)) and len(temp_range) == 2:
             min_temp, max_temp = temp_range
             try:
@@ -521,7 +526,7 @@ class FreshwaterFishingScorer(BaseScorer):
                             if sunset_dt is None:
                                 sunset_dt = time_only_to_dt(sunset)
                         except Exception:
-                            pass
+                            _LOGGER.debug("Failed to parse time-only sunrise/sunset values: %s / %s", sunrise, sunset)
 
                     if sunrise_dt and sunset_dt:
                         # Normalize to UTC
@@ -547,12 +552,13 @@ class FreshwaterFishingScorer(BaseScorer):
                         return 6.0
 
             # Fallback to basic hour checks (local hour)
-            hour = dt_util.as_local(current_time).hour if current_time else datetime.now().hour
-            if 5 <= hour <= 8 or 17 <= hour <= 20:
+            local_hour = dt_util.as_local(current_time).hour if current_time else datetime.now().hour
+            if 5 <= local_hour <= 8 or 17 <= local_hour <= 20:
                 return 10.0
             else:
                 return 6.0
         except Exception:
+            _LOGGER.exception("Error scoring time of day; falling back to neutral")
             return 6.0
 
     def _score_season(self, current_time: datetime) -> float:
@@ -593,6 +599,7 @@ class FreshwaterFishingScorer(BaseScorer):
         try:
             if isinstance(v, (int, float)):
                 val = float(v)
+                # ms vs s heuristic
                 if val > 1e12:
                     val = val / 1000.0
                 return datetime.fromtimestamp(val, tz=timezone.utc)
