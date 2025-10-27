@@ -4,8 +4,9 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
 from homeassistant.const import UnitOfLength, UnitOfSpeed, PERCENTAGE
 from homeassistant.util import dt as dt_util
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
+from typing import Any, Dict, List, Optional
 
 from .const import (
     DOMAIN,
@@ -20,6 +21,7 @@ from .const import (
     PERIOD_FULL_DAY,
     CONF_SPECIES_ID,
     CONF_HABITAT_PRESET,
+    CONF_USE_OPEN_METEO,
 )
 from .score import FreshwaterFishingScorer
 from .ocean_scoring import OceanFishingScorer
@@ -31,6 +33,208 @@ from .data_formatter import DataFormatter
 from .api import OpenMeteoClient
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class OpenMeteoAdapter:
+    """
+    Adapter to expose a small, defensive interface compatible with the WeatherFetcher expectations.
+
+    It wraps the OpenMeteoClient (which returns normalized hourly items) and exposes:
+      - async get_forecast(days) -> dict keyed by ISO date with normalized daily values
+      - async get_current() -> dict with normalized current weather fields
+
+    Normalizations applied:
+      - temperature from temperature_2m (avg)
+      - wind_speed from wind_speed_10m (m/s -> km/h)
+      - wind_gust estimated from available gust key or set to 1.2 * wind_speed
+      - cloud_cover from cloudcover
+      - precipitation_probability = percent of hours with precipitation > 0
+      - pressure from pressure_msl (hPa)
+    """
+
+    def __init__(self, client: OpenMeteoClient, latitude: float, longitude: float, include_marine: bool = False):
+        self._client = client
+        self._lat = latitude
+        self._lon = longitude
+        self._include_marine = include_marine
+
+    async def get_forecast(self, days: int = 7) -> Dict[str, Dict]:
+        hourly = await self._client.fetch_hourly_forecast(
+            self._lat, self._lon, include_marine=self._include_marine, forecast_days=days
+        )
+        if not hourly or not isinstance(hourly, list):
+            return {}
+
+        per_day: Dict[str, Dict[str, Any]] = {}
+        counts: Dict[str, int] = {}
+
+        for item in hourly:
+            t = item.get("time")
+            dt = dt_util.parse_datetime(t) if t else None
+            if dt is None:
+                continue
+            # normalize to UTC date string
+            date_key = dt.astimezone(timezone.utc).date().isoformat()
+
+            temp = item.get("temperature_2m")
+            wind_ms = item.get("wind_speed_10m")  # m/s
+            gust_ms = item.get("wind_gust_10m") or item.get("wind gust") or item.get("windgusts_10m")
+            cloud = item.get("cloudcover") or item.get("cloud_cover")
+            precip = item.get("precipitation") or item.get("rain") or item.get("precip")
+            pressure = item.get("pressure_msl") or item.get("pressure")
+
+            # initialize
+            if date_key not in per_day:
+                per_day[date_key] = {
+                    "temperature": 0.0,
+                    "wind_speed": 0.0,
+                    "wind_gust": 0.0,
+                    "cloud_cover": 0.0,
+                    "precip_hours": 0,
+                    "pressure": 0.0,
+                }
+                counts[date_key] = 0
+
+            counts[date_key] += 1
+            entry = per_day[date_key]
+
+            if temp is not None:
+                try:
+                    entry["temperature"] += float(temp)
+                except Exception:
+                    pass
+
+            if wind_ms is not None:
+                try:
+                    entry["wind_speed"] += float(wind_ms) * 3.6  # m/s -> km/h
+                except Exception:
+                    pass
+
+            # gust: prefer explicit gust if present (m/s -> km/h)
+            if gust_ms is not None:
+                try:
+                    entry["wind_gust"] = max(entry["wind_gust"], float(gust_ms) * 3.6)
+                except Exception:
+                    pass
+
+            if cloud is not None:
+                try:
+                    entry["cloud_cover"] += float(cloud)
+                except Exception:
+                    pass
+
+            if precip is not None:
+                try:
+                    if float(precip) > 0:
+                        entry["precip_hours"] += 1
+                except Exception:
+                    pass
+
+            if pressure is not None:
+                try:
+                    entry["pressure"] += float(pressure)
+                except Exception:
+                    pass
+
+        # Finalize daily aggregates and map to expected keys
+        final: Dict[str, Dict] = {}
+        sorted_dates = sorted(per_day.keys())[:days]
+        for d in sorted_dates:
+            cnt = counts.get(d, 1) or 1
+            e = per_day[d]
+
+            avg_temp = e["temperature"] / cnt if cnt else None
+            avg_wind = e["wind_speed"] / cnt if cnt else None
+            gust = e["wind_gust"]
+            if not gust and avg_wind is not None:
+                # estimate gust as 1.2x average wind if no explicit gust provided
+                gust = avg_wind * 1.2
+
+            avg_cloud = e["cloud_cover"] / cnt if cnt else None
+            precip_pct = int(round((e["precip_hours"] / cnt) * 100)) if cnt else 0
+            avg_pressure = e["pressure"] / cnt if cnt else None
+
+            final[d] = {
+                "temperature": float(avg_temp) if avg_temp is not None else None,
+                "wind_speed": float(avg_wind) if avg_wind is not None else None,
+                "wind_gust": float(gust) if gust is not None else None,
+                "cloud_cover": int(round(avg_cloud)) if avg_cloud is not None else None,
+                "precipitation_probability": int(precip_pct),
+                "pressure": float(avg_pressure) if avg_pressure is not None else None,
+            }
+
+        return final
+
+    async def get_current(self) -> Optional[Dict]:
+        hourly = await self._client.fetch_hourly_forecast(
+            self._lat, self._lon, include_marine=self._include_marine, forecast_days=1
+        )
+        if not hourly or not isinstance(hourly, list):
+            return None
+
+        # Find the hourly entry closest to now (UTC)
+        now = datetime.now(timezone.utc)
+        best = None
+        best_delta = None
+        for item in hourly:
+            t = item.get("time")
+            dt = dt_util.parse_datetime(t) if t else None
+            if dt is None:
+                continue
+            dt = dt.astimezone(timezone.utc)
+            delta = abs((dt - now).total_seconds())
+            if best is None or delta < best_delta:
+                best = item
+                best_delta = delta
+
+        if not best:
+            return None
+
+        temp = best.get("temperature_2m")
+        wind_ms = best.get("wind_speed_10m")
+        gust_ms = best.get("wind_gust_10m") or best.get("windgusts_10m")
+        cloud = best.get("cloudcover") or best.get("cloud_cover")
+        precip = best.get("precipitation") or best.get("rain") or best.get("precip")
+        pressure = best.get("pressure_msl") or best.get("pressure")
+
+        try:
+            temperature = float(temp) if temp is not None else None
+        except Exception:
+            temperature = None
+
+        try:
+            wind_speed = float(wind_ms) * 3.6 if wind_ms is not None else None
+        except Exception:
+            wind_speed = None
+
+        try:
+            wind_gust = float(gust_ms) * 3.6 if gust_ms is not None else (wind_speed * 1.2 if wind_speed else None)
+        except Exception:
+            wind_gust = wind_speed * 1.2 if wind_speed else None
+
+        try:
+            cloud_cover = int(round(float(cloud))) if cloud is not None else None
+        except Exception:
+            cloud_cover = None
+
+        try:
+            precipitation_probability = 100 if (precip is not None and float(precip) > 0) else 0
+        except Exception:
+            precipitation_probability = 0
+
+        try:
+            pressure_val = float(pressure) if pressure is not None else None
+        except Exception:
+            pressure_val = None
+
+        return {
+            "temperature": temperature,
+            "wind_speed": wind_speed,
+            "wind_gust": wind_gust,
+            "cloud_cover": cloud_cover,
+            "precipitation_probability": precipitation_probability,
+            "pressure": pressure_val,
+        }
 
 
 async def async_setup_entry(
@@ -64,21 +268,26 @@ async def _setup_freshwater_sensors(hass, config_entry, async_add_entities):
     weather_entity = data.get(CONF_WEATHER_ENTITY)
 
     # Open-Meteo usage flag (default True per user request)
-    use_open_meteo = data.get("use_open_meteo", True)
-    open_meteo_client = OpenMeteoClient() if use_open_meteo else None
+    use_open_meteo = data.get(CONF_USE_OPEN_METEO, True)
+    open_meteo_client = None
+    open_meteo_adapter = None
+    if use_open_meteo:
+        client = OpenMeteoClient()
+        open_meteo_client = client
+        open_meteo_adapter = OpenMeteoAdapter(client, lat, lon, include_marine=False)
 
     # Initialize species loader
     species_loader = SpeciesLoader(hass)
     await species_loader.async_load_profiles()
 
-    # Initialize weather fetcher with weather_entity parameter and optional Open-Meteo client
+    # Initialize weather fetcher with weather_entity parameter and optional Open-Meteo adapter
     weather_fetcher = WeatherFetcher(
         hass,
         lat,
         lon,
         weather_entity=weather_entity,
         use_open_meteo=use_open_meteo,
-        open_meteo_client=open_meteo_client,
+        open_meteo_client=open_meteo_adapter,
     )
 
     for fish in fish_list:
@@ -114,8 +323,13 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
     weather_entity = data.get(CONF_WEATHER_ENTITY)
 
     # Open-Meteo usage flag (default True)
-    use_open_meteo = data.get("use_open_meteo", True)
-    open_meteo_client = OpenMeteoClient() if use_open_meteo else None
+    use_open_meteo = data.get(CONF_USE_OPEN_METEO, True)
+    open_meteo_client = None
+    open_meteo_adapter = None
+    if use_open_meteo:
+        client = OpenMeteoClient()
+        open_meteo_client = client
+        open_meteo_adapter = OpenMeteoAdapter(client, lat, lon, include_marine=data.get(CONF_MARINE_ENABLED, True))
 
     # Create a location key based on coordinates for sensor naming consistency
     location_key = f"{name.lower().replace(' ', '_')}"
@@ -129,7 +343,7 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
         lon,
         weather_entity=weather_entity,
         use_open_meteo=use_open_meteo,
-        open_meteo_client=open_meteo_client,
+        open_meteo_client=open_meteo_adapter,
     )
 
     if data.get(CONF_TIDE_MODE) == TIDE_MODE_PROXY:
@@ -228,11 +442,11 @@ class FishScoreSensor(SensorEntity):
         self._state = None
         self._species_loader = species_loader
         self._weather_fetcher = weather_fetcher
-        
+
         # Get species profile
         species_profile = species_loader.get_species(fish)
         species_profiles = {fish: species_profile} if species_profile else {}
-        
+
         # Initialize the scorer with correct signature
         self._scorer = FreshwaterFishingScorer(
             latitude=lat,
@@ -240,7 +454,7 @@ class FishScoreSensor(SensorEntity):
             species=[fish],
             species_profiles=species_profiles,
         )
-        
+
         self._attrs = {
             "fish": fish,
             "location": name,
@@ -281,7 +495,7 @@ class FishScoreSensor(SensorEntity):
     @property
     def extra_state_attributes(self):
         return self._attrs
-    
+
     @property
     def native_unit_of_measurement(self):
         return "/10"
@@ -301,30 +515,30 @@ class FishScoreSensor(SensorEntity):
         """Fetch the current score and forecast."""
         now = datetime.now()
         update_hours = [0, 6, 12, 18]
-        
+
         if self._last_update_hour is not None and now.hour not in update_hours:
             return
-        
+
         if self._last_update_hour == now.hour:
             return
-        
+
         try:
             # Get current weather data from HA weather entity (raw data)
             weather_data_raw = await self._weather_fetcher.get_weather_data()
             if not weather_data_raw:
                 _LOGGER.error("No weather data available for freshwater sensor")
                 return
-            
+
             # Get current astro data (already in correct format)
             astro_data = await self._get_astro_data()
-            
+
             # Calculate current score - pass raw data, scorer will format internally
             result = self._scorer.calculate_score(
                 weather_data=weather_data_raw,
                 astro_data=astro_data,
                 current_time=now,
             )
-            
+
             # Result is already formatted by the scorer
             self._state = result["score"]
             self._attrs.update({
@@ -333,7 +547,7 @@ class FishScoreSensor(SensorEntity):
                 "rating": result.get("rating"),
                 "last_updated": now.isoformat(),
             })
-            
+
             # Get forecast data
             forecast_raw = await self._weather_fetcher.get_forecast(days=7)
             if forecast_raw:
@@ -341,27 +555,30 @@ class FishScoreSensor(SensorEntity):
                 forecast_list = []
                 for date_str, data in forecast_raw.items():
                     # Parse the date string
-                    forecast_date = datetime.fromisoformat(date_str)
+                    try:
+                        forecast_date = datetime.fromisoformat(date_str)
+                    except Exception:
+                        forecast_date = dt_util.parse_datetime(date_str)
                     # Add datetime to the raw data
                     data["datetime"] = forecast_date
                     forecast_list.append(data)
-                
+
                 # Calculate forecast scores - pass raw data
                 forecast_scores = await self._scorer.calculate_forecast(
                     weather_forecast=forecast_list,
                 )
                 # Forecast is already formatted by the scorer
                 self._attrs["forecast"] = forecast_scores
-            
+
             self._last_update_hour = now.hour
-            
+
             _LOGGER.debug(
                 "Updated %s: score=%s, component_scores=%s",
                 self._name,
                 self._state,
                 self._attrs.get("component_scores"),
             )
-            
+
         except Exception as e:
             _LOGGER.error("Error updating freshwater sensor %s: %s", self._name, e, exc_info=True)
             self._state = None
@@ -376,7 +593,7 @@ class FishScoreSensor(SensorEntity):
         if sun_state:
             sunrise_str = sun_state.attributes.get("next_rising")
             sunset_str = sun_state.attributes.get("next_setting")
-            
+
             if sunrise_str:
                 astro["sunrise"] = dt_util.parse_datetime(sunrise_str)
             if sunset_str:
@@ -415,7 +632,7 @@ class OceanFishingScoreSensor(SensorEntity):
         self._tide_proxy = tide_proxy
         self._marine_fetcher = marine_fetcher
         self._weather_fetcher = weather_fetcher
-        
+
         data = config_entry.data
         name = data["name"]
         lat = data["latitude"]
@@ -424,7 +641,7 @@ class OceanFishingScoreSensor(SensorEntity):
 
         # Initialize species loader
         species_loader = SpeciesLoader(hass)
-        
+
         # Initialize the ocean scorer with correct signature
         self._scorer = OceanFishingScorer(
             latitude=lat,
@@ -553,27 +770,30 @@ class OceanFishingScoreSensor(SensorEntity):
                 # Convert forecast dict to list format
                 forecast_list = []
                 for date_str, data in forecast_raw.items():
-                    forecast_date = datetime.fromisoformat(date_str)
+                    try:
+                        forecast_date = datetime.fromisoformat(date_str)
+                    except Exception:
+                        forecast_date = dt_util.parse_datetime(date_str)
                     data["datetime"] = forecast_date
                     forecast_list.append(data)
-                
+
                 # Get tide and marine forecasts if available
                 tide_forecast = None
                 marine_forecast = None
-                
+
                 if tide_data_raw and "forecast" in tide_data_raw:
                     tide_forecast = tide_data_raw["forecast"]
-                
+
                 if marine_data_raw and "forecast" in marine_data_raw:
                     marine_forecast = marine_data_raw["forecast"]
-                
+
                 # Calculate forecast scores - pass raw data
                 forecast_scores = await self._scorer.calculate_forecast(
                     weather_forecast=forecast_list,
                     tide_forecast=tide_forecast,
                     marine_forecast=marine_forecast,
                 )
-                
+
                 # Forecast is already formatted by the scorer
                 self._attrs["forecast"] = forecast_scores
 
@@ -600,7 +820,7 @@ class OceanFishingScoreSensor(SensorEntity):
         if sun_state:
             sunrise_str = sun_state.attributes.get("next_rising")
             sunset_str = sun_state.attributes.get("next_setting")
-            
+
             if sunrise_str:
                 astro["sunrise"] = dt_util.parse_datetime(sunrise_str)
             if sunset_str:
@@ -625,11 +845,11 @@ class OceanFishingScoreSensor(SensorEntity):
     async def async_added_to_hass(self):
         """When entity is added to hass."""
         await self._scorer.async_initialize()
-        
+
         # Update species_focus with the actual loaded species name
         if self._scorer.species_profile:
             self._attrs["species_focus"] = self._scorer.species_profile.get("name", "Unknown")
-        
+
         await self.async_update()
 
 
@@ -695,9 +915,9 @@ class TideStateSensor(SensorEntity):
                 _LOGGER.warning("No tide data available")
                 self._state = "unknown"
                 return
-                
+
             tide_data = DataFormatter.format_tide_data(tide_data_raw)
-            
+
             self._state = tide_data.get("state", "unknown")
             self._attrs = {
                 "next_high": tide_data.get("next_high"),
@@ -768,7 +988,7 @@ class TideStrengthSensor(SensorEntity):
                 _LOGGER.warning("No tide data available")
                 self._state = None
                 return
-                
+
             tide_data = DataFormatter.format_tide_data(tide_data_raw)
             self._state = tide_data.get("strength", 50)
         except Exception as e:
@@ -844,9 +1064,9 @@ class WaveHeightSensor(SensorEntity):
                 _LOGGER.warning("No marine data available")
                 self._state = None
                 return
-                
+
             marine_data = DataFormatter.format_marine_data(marine_data_raw)
-            
+
             current = marine_data.get("current", {})
             self._state = current.get("wave_height")
             self._attrs = {
@@ -918,9 +1138,9 @@ class WavePeriodSensor(SensorEntity):
                 _LOGGER.warning("No marine data available")
                 self._state = None
                 return
-                
+
             marine_data = DataFormatter.format_marine_data(marine_data_raw)
-            
+
             current = marine_data.get("current", {})
             self._state = current.get("wave_period")
         except Exception as e:
