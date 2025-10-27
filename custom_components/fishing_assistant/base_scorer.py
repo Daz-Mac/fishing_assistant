@@ -1,13 +1,15 @@
 """Base scorer abstract class for Fishing Assistant.
 
-This module provides the abstract base class that both freshwater and ocean
-scoring modules inherit from, ensuring consistent structure and interface.
-The file has been hardened for defensive handling of missing/incorrect types
-and to ensure outputs are numeric and stable for downstream consumers.
+This module provides the abstract base class that freshwater and ocean
+scoring modules inherit from. It contains defensive handling of missing or
+incorrect types and ensures outputs are numeric and stable for downstream
+consumers.
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, List
+from typing import Any, Dict, Optional, List
 import logging
 import math
 
@@ -27,8 +29,10 @@ _LOGGER = logging.getLogger(__name__)
 class BaseScorer(ABC):
     """Abstract base class for fishing condition scoring.
 
-    All scoring modules (freshwater, ocean) must inherit from this class
-    and implement the required abstract methods.
+    Concrete scorers should implement the abstract methods to compute the
+    individual component scores. The BaseScorer wraps these implementations
+    to normalize outputs, compute weighted totals, and provide human-readable
+    summaries and logging.
     """
 
     def __init__(
@@ -37,8 +41,8 @@ class BaseScorer(ABC):
         longitude: float,
         species: List[str],
         species_profiles: Dict[str, Any],
-    ):
-        """Initialize the base scorer.
+    ) -> None:
+        """Initialize base scorer.
 
         Args:
             latitude: Location latitude
@@ -46,22 +50,24 @@ class BaseScorer(ABC):
             species: List of target species names
             species_profiles: Dictionary of species profile data
         """
-        self.latitude = latitude
-        self.longitude = longitude
-        self.species = species or []
+        self.latitude = float(latitude or 0.0)
+        self.longitude = float(longitude or 0.0)
+        self.species = list(species or [])
         self.species_profiles = species_profiles or {}
-        # Internal storage of last run results
         self._component_scores: ComponentScores = {}
         self._conditions_summary: str = ""
 
         _LOGGER.debug(
             "Initialized %s for species: %s at (%.6f, %.6f)",
             self.__class__.__name__,
-            self.species,
-            float(self.latitude or 0.0),
-            float(self.longitude or 0.0),
+            ", ".join(self.species) if self.species else "<none>",
+            self.latitude,
+            self.longitude,
         )
 
+    # ----------------------------
+    # Abstract methods to override
+    # ----------------------------
     @abstractmethod
     def _calculate_base_score(
         self,
@@ -73,27 +79,39 @@ class BaseScorer(ABC):
     ) -> ComponentScores:
         """Calculate component scores.
 
-        Args:
-            weather_data: Raw weather data dictionary
-            astro_data: Raw astronomical data dictionary
-            tide_data: Optional raw tide data dictionary
-            marine_data: Optional raw marine data dictionary
-            current_time: Optional datetime object for time-based scoring
-
-        Returns:
-            ComponentScores dictionary with individual component scores
+        Implementations should return a dict mapping component name -> numeric score
+        (preferably between 0 and 10). This BaseScorer will coerce and clamp values.
         """
         raise NotImplementedError
 
     @abstractmethod
     def _get_factor_weights(self) -> Dict[str, float]:
-        """Get the weights for each scoring factor.
-
-        Returns:
-            Dictionary mapping factor names to their weights
-        """
+        """Return weights for each scoring factor (component_name -> weight)."""
         raise NotImplementedError
 
+    @abstractmethod
+    def _score_temperature(self, temperature: float) -> float:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _score_wind(self, wind_speed: float, wind_gust: float) -> float:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _score_pressure(self, pressure: float) -> float:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _score_moon(self, moon_phase: Optional[float]) -> float:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _score_time_of_day(self, current_time: Any, astro: Dict[str, Any]) -> float:
+        raise NotImplementedError
+
+    # ----------------------------
+    # Public API
+    # ----------------------------
     def calculate_score(
         self,
         weather_data: Optional[Dict[str, Any]],
@@ -102,80 +120,70 @@ class BaseScorer(ABC):
         marine_data: Optional[Dict[str, Any]] = None,
         current_time: Optional[Any] = None,
     ) -> ScoringResult:
-        """Calculate the fishing score based on conditions.
+        """Calculate the fishing score based on provided inputs.
 
-        This wraps the concrete _calculate_base_score, ensures component scores
-        are numeric and normalized, computes a weighted final score, stores a
-        human-readable summary, logs details, and returns the formatted result.
-
-        Args:
-            weather_data: Raw weather data dictionary
-            astro_data: Raw astronomical data dictionary
-            tide_data: Optional raw tide data dictionary
-            marine_data: Optional raw marine data dictionary
-            current_time: Optional datetime object for time-based scoring
-
-        Returns:
-            ScoringResult with score, breakdown, and component scores
+        Normalizes the component scores, computes a weighted average, stores a
+        human-readable summary, logs details and returns a formatted ScoringResult.
         """
-        # Ensure inputs are not None
         weather_data = weather_data or {}
         astro_data = astro_data or {}
+
         try:
-            # Calculate component scores (implementations will format data internally)
             raw_component_scores = self._calculate_base_score(
                 weather_data, astro_data, tide_data, marine_data, current_time
             ) or {}
 
-            # Ensure component_scores are numeric and within 0-10
+            # Ensure component_scores is a dict
+            if not isinstance(raw_component_scores, dict):
+                _LOGGER.debug("Base scorer returned non-dict component scores: %r", type(raw_component_scores))
+                raw_component_scores = {}
+
+            # Coerce component scores to finite floats and clamp 0-10
             component_scores: ComponentScores = {}
-            for k, v in (raw_component_scores.items() if isinstance(raw_component_scores, dict) else []):
+            for k, v in raw_component_scores.items():
                 try:
                     val = float(v)
                     if math.isnan(val) or math.isinf(val):
-                        raise ValueError("Non-finite component score")
+                        raise ValueError("Non-finite")
                 except Exception:
-                    _LOGGER.debug("Non-numeric component score for %s: %r — defaulting to 5.0", k, v)
+                    _LOGGER.debug("Invalid component score for '%s': %r — defaulting to 5.0", k, v)
                     val = 5.0
-                # Clamp to 0-10
                 component_scores[k] = max(0.0, min(10.0, val))
 
-            # Format weather for summary (we still need it here). Use DataFormatter defensively.
+            # Format weather snapshot for summary
             weather = DataFormatter.format_weather_data(weather_data or {})
 
-            # Get weights and calculate weighted average
+            # Compute final weighted score
             weights = self._get_factor_weights() or {}
             final_score = self._weighted_average(component_scores, weights)
-            # Ensure final_score is numeric and in range
+
+            # Ensure final is finite and clamped
             try:
                 final_score = float(final_score)
                 if math.isnan(final_score) or math.isinf(final_score):
                     raise ValueError("Non-finite final score")
             except Exception:
-                _LOGGER.warning("Final score produced non-numeric value (%r). Defaulting to 5.0", final_score)
+                _LOGGER.warning("Final score non-numeric (%r), defaulting to 5.0", final_score)
                 final_score = 5.0
             final_score = max(0.0, min(10.0, final_score))
 
-            # Store for later retrieval
-            self._component_scores = component_scores
+            # Persist for later retrieval
+            self._component_scores = dict(component_scores)
             self._conditions_summary = self._format_conditions_text(final_score, weather, component_scores)
 
-            # Log details
             self._log_scoring_details(final_score, component_scores)
 
-            # Return formatted result using DataFormatter to ensure consistent external shape
-            return DataFormatter.format_score_result(
-                {
-                    "score": round(final_score, 1),
-                    "conditions_summary": self._conditions_summary,
-                    "component_scores": component_scores,
-                    "breakdown": {},
-                }
-            )
+            result: Dict[str, Any] = {
+                "score": round(final_score, 1),
+                "conditions_summary": self._conditions_summary,
+                "component_scores": component_scores,
+                "breakdown": {},
+            }
+
+            return DataFormatter.format_score_result(result)
 
         except Exception as exc:
             _LOGGER.exception("Unhandled error while calculating score: %s", exc)
-            # Return a safe default structured result
             return DataFormatter.format_score_result(
                 {
                     "score": 5.0,
@@ -185,93 +193,19 @@ class BaseScorer(ABC):
                 }
             )
 
-    @abstractmethod
-    def _score_temperature(self, temperature: float) -> float:
-        """Score based on temperature.
-
-        Args:
-            temperature: Temperature in Celsius
-
-        Returns:
-            Score from 0-10
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    def _score_wind(self, wind_speed: float, wind_gust: float) -> float:
-        """Score based on wind conditions.
-
-        Args:
-            wind_speed: Wind speed in km/h
-            wind_gust: Wind gust speed in km/h
-
-        Returns:
-            Score from 0-10
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    def _score_pressure(self, pressure: float) -> float:
-        """Score based on barometric pressure.
-
-        Args:
-            pressure: Pressure in hPa
-
-        Returns:
-            Score from 0-10
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    def _score_moon(self, moon_phase: Optional[float]) -> float:
-        """Score based on moon phase.
-
-        Args:
-            moon_phase: Moon phase from 0-1 (0=new, 0.5=full)
-
-        Returns:
-            Score from 0-10
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    def _score_time_of_day(self, current_time: Any, astro: Dict[str, Any]) -> float:
-        """Score based on time of day.
-
-        Args:
-            current_time: Current datetime object
-            astro: Astronomical data dictionary
-
-        Returns:
-            Score from 0-10
-        """
-        raise NotImplementedError
-
     def get_component_scores(self) -> ComponentScores:
-        """Get the component scores from the last calculation.
-
-        Returns:
-            ComponentScores dictionary with individual component scores
-        """
-        return self._component_scores
+        """Return a copy of the last-calculated component scores."""
+        return dict(self._component_scores or {})
 
     def get_conditions_summary(self) -> str:
-        """Get the conditions summary from the last calculation.
+        """Return the last-calculated human-readable conditions summary."""
+        return str(self._conditions_summary or "")
 
-        Returns:
-            Human-readable conditions summary string
-        """
-        return self._conditions_summary
-
-    def _normalize_score(self, score: float) -> float:
-        """Normalize a score to 0-10 range.
-
-        Args:
-            score: Raw score value
-
-        Returns:
-            Normalized score between 0 and 10
-        """
+    # ----------------------------
+    # Helpers
+    # ----------------------------
+    def _normalize_score(self, score: Any) -> float:
+        """Coerce a value into a finite 0-10 float."""
         try:
             s = float(score)
         except Exception:
@@ -281,17 +215,11 @@ class BaseScorer(ABC):
         return max(0.0, min(10.0, s))
 
     def _weighted_average(self, scores: Dict[str, float], weights: Dict[str, float]) -> float:
-        """Calculate weighted average of scores.
+        """Compute a weighted average of component scores.
 
-        Args:
-            scores: Dictionary of component scores
-            weights: Dictionary of weights for each component
-
-        Returns:
-            Weighted average score
+        If weights is empty or invalid, compute simple average of available scores.
         """
         if not isinstance(weights, dict) or not weights:
-            # If no weights provided, compute simple average of available scores
             vals = [float(v) for v in scores.values() if self._is_finite_number(v)]
             if not vals:
                 return 5.0
@@ -299,33 +227,33 @@ class BaseScorer(ABC):
 
         total_weight = 0.0
         weighted_sum = 0.0
-        for key, weight in weights.items():
+        for key, w_raw in weights.items():
             try:
-                w = float(weight)
+                w = float(w_raw)
             except Exception:
-                _LOGGER.debug("Non-numeric weight for %s: %r — skipping", key, weight)
+                _LOGGER.debug("Invalid weight for '%s': %r — skipping", key, w_raw)
                 continue
-            if w <= 0:
+            if w <= 0.0:
                 continue
             total_weight += w
             raw_val = scores.get(key, 5.0)
             try:
                 val = float(raw_val)
-                if not self._is_finite_number(val):
+                if math.isnan(val) or math.isinf(val):
                     raise ValueError
             except Exception:
-                _LOGGER.debug("Non-numeric score for %s: %r — using 5.0", key, raw_val)
+                _LOGGER.debug("Invalid score for weighted key '%s': %r — using 5.0", key, raw_val)
                 val = 5.0
             weighted_sum += val * w
 
-        if total_weight <= 0:
+        if total_weight <= 0.0:
             return 5.0
 
         return weighted_sum / total_weight
 
     @staticmethod
     def _is_finite_number(v: Any) -> bool:
-        """Return True if v is a finite numeric value."""
+        """Return True if v can be coerced to a finite float."""
         try:
             f = float(v)
             return not (math.isinf(f) or math.isnan(f))
@@ -333,56 +261,52 @@ class BaseScorer(ABC):
             return False
 
     def _get_species_preferences(self) -> Dict[str, Any]:
-        """Get aggregated preferences for all target species.
+        """Aggregate preferences across requested species.
 
-        Returns:
-            Dictionary with aggregated species preferences
+        Returns a dictionary with averaged temperature ranges and collected activity patterns.
         """
         if not self.species or not self.species_profiles:
             return {}
 
-        # Aggregate preferences across all species
         temp_ranges = []
         activity_patterns = []
 
         for species_name in self.species:
-            profile = self.species_profiles.get(species_name, {}) or {}
+            profile = (self.species_profiles.get(species_name) or {}) or {}
 
-            # Support multiple naming shapes for temperature ranges
+            # Handle several naming schemes for temperature ranges
             tr = None
-            if "temperature_range" in profile:
-                tr = profile["temperature_range"]
-            elif "temp_range" in profile:
-                tr = profile["temp_range"]
+            if isinstance(profile.get("temperature_range"), (dict, list, tuple)):
+                tr = profile.get("temperature_range")
+            elif isinstance(profile.get("temp_range"), (dict, list, tuple)):
+                tr = profile.get("temp_range")
             elif "temp_min" in profile and "temp_max" in profile:
                 tr = {"min": profile.get("temp_min"), "max": profile.get("temp_max")}
             if tr:
                 temp_ranges.append(tr)
 
-            if "activity_pattern" in profile:
-                activity_patterns.append(profile["activity_pattern"])
+            ap = profile.get("activity_pattern")
+            if ap:
+                activity_patterns.append(ap)
 
         aggregated: Dict[str, Any] = {}
 
-        # Average temperature ranges if possible
         if temp_ranges:
             mins = []
             maxs = []
             opt_mins = []
             opt_maxs = []
             for r in temp_ranges:
-                # r may be dict-like or list/tuple
                 try:
                     if isinstance(r, dict):
-                        mins.append(float(r.get("min", 0)))
-                        maxs.append(float(r.get("max", 30)))
-                        opt_mins.append(float(r.get("optimal_min", mins[-1] if mins else 15)))
-                        opt_maxs.append(float(r.get("optimal_max", maxs[-1] if maxs else 25)))
+                        mins.append(float(r.get("min", 0.0)))
+                        maxs.append(float(r.get("max", 30.0)))
+                        opt_mins.append(float(r.get("optimal_min", mins[-1] if mins else (mins[-1] + 2 if mins else 15.0))))
+                        opt_maxs.append(float(r.get("optimal_max", maxs[-1] if maxs else (maxs[-1] - 2 if maxs else 25.0))))
                     elif isinstance(r, (list, tuple)) and len(r) >= 2:
                         mins.append(float(r[0]))
                         maxs.append(float(r[1]))
-                        # best-effort fill
-                        span = float(maxs[-1] - mins[-1]) if maxs and mins else 25.0
+                        span = float(maxs[-1] - mins[-1]) if (maxs and mins) else 25.0
                         opt_mins.append(mins[-1] + span * 0.2)
                         opt_maxs.append(maxs[-1] - span * 0.2)
                 except Exception:
@@ -391,14 +315,9 @@ class BaseScorer(ABC):
             if mins and maxs:
                 aggregated["temp_min"] = sum(mins) / len(mins)
                 aggregated["temp_max"] = sum(maxs) / len(maxs)
-                aggregated["temp_optimal_min"] = (
-                    sum(opt_mins) / len(opt_mins) if opt_mins else aggregated["temp_min"] + 2
-                )
-                aggregated["temp_optimal_max"] = (
-                    sum(opt_maxs) / len(opt_maxs) if opt_maxs else aggregated["temp_max"] - 2
-                )
+                aggregated["temp_optimal_min"] = sum(opt_mins) / len(opt_mins) if opt_mins else (aggregated["temp_min"] + 2.0)
+                aggregated["temp_optimal_max"] = sum(opt_maxs) / len(opt_maxs) if opt_maxs else (aggregated["temp_max"] - 2.0)
 
-        # Combine activity patterns
         if activity_patterns:
             aggregated["activity_patterns"] = activity_patterns
 
@@ -410,34 +329,22 @@ class BaseScorer(ABC):
         weather: WeatherData,
         component_scores: ComponentScores,
     ) -> str:
-        """Generate human-readable conditions summary.
-
-        Args:
-            score: Overall fishing score
-            weather: Formatted weather data
-            component_scores: Component scores breakdown
-
-        Returns:
-            Human-readable conditions summary
-        """
+        """Generate a brief human-readable summary of conditions."""
         try:
-            if score >= 8:
+            if score >= 8.0:
                 rating = "Excellent"
-            elif score >= 6:
+            elif score >= 6.0:
                 rating = "Good"
-            elif score >= 4:
+            elif score >= 4.0:
                 rating = "Fair"
             else:
                 rating = "Poor"
 
-            # Find best and worst factors
             scores_dict = dict(component_scores or {})
-            # Ensure numeric comparison
             safe_scores = {k: (float(v) if self._is_finite_number(v) else 5.0) for k, v in scores_dict.items()}
             best_factor = max(safe_scores, key=safe_scores.get) if safe_scores else "Unknown"
             worst_factor = min(safe_scores, key=safe_scores.get) if safe_scores else "Unknown"
 
-            # Safe weather values for formatting
             def safe_weather_float(key: str, default: float = 0.0) -> float:
                 try:
                     val = weather.get(key, default)
@@ -451,21 +358,15 @@ class BaseScorer(ABC):
             summary = f"{rating} conditions. "
             summary += f"Best: {best_factor} ({safe_scores.get(best_factor, 0.0):.1f}/10). "
             summary += f"Worst: {worst_factor} ({safe_scores.get(worst_factor, 0.0):.1f}/10). "
-            summary += f"Temp: {temp_val:.1f}°C, "
-            summary += f"Wind: {wind_val:.1f} km/h"
+            summary += f"Temp: {temp_val:.1f}°C, Wind: {wind_val:.1f} km/h"
 
             return summary
         except Exception:
             _LOGGER.exception("Error formatting conditions summary")
             return "Conditions summary unavailable."
 
-    def _log_scoring_details(self, score: float, component_scores: ComponentScores):
-        """Log detailed scoring information for debugging.
-
-        Args:
-            score: Overall fishing score
-            component_scores: Component scores breakdown
-        """
+    def _log_scoring_details(self, score: float, component_scores: ComponentScores) -> None:
+        """Log detailed scoring information for debugging."""
         try:
             _LOGGER.debug("Final Score: %.1f/10", float(score))
             _LOGGER.debug("Component Scores:")
