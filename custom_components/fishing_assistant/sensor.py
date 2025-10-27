@@ -751,12 +751,15 @@ class OceanFishingScoreSensor(SensorEntity):
                 "last_updated": now.isoformat(),
             })
 
+            # Tide handling - DataFormatter.format_tide_data now always returns a dict
             if tide_data_raw:
-                tide_data = DataFormatter.format_tide_data(tide_data_raw)
-                self._attrs["tide_state"] = tide_data.get("state")
+                tide_data = DataFormatter.format_tide_data(tide_data_raw) or {}
+                self._attrs["tide_state"] = tide_data.get("state", "unknown")
 
+            # Format weather/marine for safety checks - DataFormatter.format_marine_data returns {"current":..., "forecast":...}
             weather_formatted = DataFormatter.format_weather_data(weather_data_raw)
-            marine_formatted = DataFormatter.format_marine_data(marine_data_raw) if marine_data_raw else {}
+            marine_formatted = DataFormatter.format_marine_data(marine_data_raw) if marine_data_raw else {"current": {}, "forecast": {}}
+            # Safety check uses the normalized shapes
             safety_status, safety_reasons = self._scorer.check_safety(weather_formatted, marine_formatted)
             self._attrs["safety"] = {
                 "status": safety_status,
@@ -926,9 +929,10 @@ class TideStateSensor(SensorEntity):
             if not tide_data_raw:
                 _LOGGER.warning("No tide data available for tide state sensor")
                 self._state = "unknown"
+                self._attrs = {}
                 return
 
-            tide_data = DataFormatter.format_tide_data(tide_data_raw)
+            tide_data = DataFormatter.format_tide_data(tide_data_raw) or {}
 
             self._state = tide_data.get("state", "unknown")
             self._attrs = {
@@ -1001,7 +1005,7 @@ class TideStrengthSensor(SensorEntity):
                 self._state = None
                 return
 
-            tide_data = DataFormatter.format_tide_data(tide_data_raw)
+            tide_data = DataFormatter.format_tide_data(tide_data_raw) or {}
             self._state = tide_data.get("strength", 50)
         except Exception as e:
             _LOGGER.exception("Error updating tide strength: %s", e)
@@ -1077,7 +1081,7 @@ class WaveHeightSensor(SensorEntity):
                 self._state = None
                 return
 
-            marine_data = DataFormatter.format_marine_data(marine_data_raw)
+            marine_data = DataFormatter.format_marine_data(marine_data_raw) or {"current": {}}
             current = marine_data.get("current", {}) if isinstance(marine_data, dict) else {}
             self._state = current.get("wave_height")
             self._attrs = {
@@ -1150,7 +1154,7 @@ class WavePeriodSensor(SensorEntity):
                 self._state = None
                 return
 
-            marine_data = DataFormatter.format_marine_data(marine_data_raw)
+            marine_data = DataFormatter.format_marine_data(marine_data_raw) or {"current": {}}
             current = marine_data.get("current", {}) if isinstance(marine_data, dict) else {}
             self._state = current.get("wave_period")
         except Exception as e:

@@ -76,6 +76,19 @@ class DataFormatter:
             pressure = raw_weather.get("pressure") or raw_weather.get("pressure_msl") or 1013.25
             dt = raw_weather.get("datetime") or raw_weather.get("time") or _iso_now_z()
 
+            # Normalize datetime to ISO Z string when possible
+            try:
+                if isinstance(dt, datetime):
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    dt_str = dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                else:
+                    dt_str = str(dt)
+                if not dt_str:
+                    dt_str = _iso_now_z()
+            except Exception:
+                dt_str = _iso_now_z()
+
             return {
                 "temperature": _safe_float(temp, 0.0),
                 "wind_speed": _safe_float(wind, 0.0),
@@ -83,7 +96,7 @@ class DataFormatter:
                 "cloud_cover": _safe_float(cloud, 0.0),
                 "precipitation_probability": _safe_float(precip, 0.0),
                 "pressure": _safe_float(pressure, 1013.25),
-                "datetime": str(dt),
+                "datetime": dt_str,
             }
         except Exception as e:
             _LOGGER.error("Error formatting weather data: %s", e, exc_info=True)
@@ -98,16 +111,34 @@ class DataFormatter:
             }
 
     @staticmethod
-    def format_marine_data(raw_marine: Optional[Dict[str, Any]]) -> Optional[MarineData]:
-        """Convert raw marine data to standardized MarineData format.
+    def format_marine_data(raw_marine: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Convert raw marine data to a consistent, nested structure.
 
-        Returns None if input is falsy.
+        Returns a dict with at least:
+          {
+            "current": { wave_height, wave_period, wave_direction, ... , "timestamp": ISO_Z },
+            "forecast": {...}  # optional, dict if present
+          }
+
+        Always returns a dict (never None) so callers can safely call .get("current", {}).
         """
+        # Provide safe default "current" snapshot
+        default_current = {
+            "wave_height": None,
+            "wave_period": None,
+            "wave_direction": None,
+            "wind_wave_height": None,
+            "wind_wave_period": None,
+            "swell_wave_height": None,
+            "swell_wave_period": None,
+            "timestamp": _iso_now_z(),
+        }
+
         if not raw_marine:
-            return None
+            return {"current": default_current, "forecast": {}}
 
         try:
-            return {
+            current = {
                 "wave_height": _safe_float(raw_marine.get("wave_height")),
                 "wave_period": _safe_float(raw_marine.get("wave_period")),
                 "wave_direction": _safe_float(raw_marine.get("wave_direction")),
@@ -117,15 +148,39 @@ class DataFormatter:
                 "swell_wave_period": _safe_float(raw_marine.get("swell_wave_period")),
                 "timestamp": str(raw_marine.get("timestamp") or raw_marine.get("time") or _iso_now_z()),
             }
+
+            # propagate forecast if present otherwise empty dict
+            forecast = {}
+            if isinstance(raw_marine.get("forecast"), dict):
+                forecast = raw_marine.get("forecast")
+            elif isinstance(raw_marine.get("forecast"), list):
+                # leave list as-is — callers expect dict normally; keep raw in case they can handle lists
+                forecast = {"items": raw_marine.get("forecast")}
+
+            return {"current": current, "forecast": forecast}
         except Exception as e:
             _LOGGER.error("Error formatting marine data: %s", e, exc_info=True)
-            return None
+            return {"current": default_current, "forecast": {}}
 
     @staticmethod
-    def format_tide_data(raw_tide: Optional[Dict[str, Any]]) -> Optional[TideData]:
-        """Convert raw tide data to standardized TideData format."""
+    def format_tide_data(raw_tide: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Convert raw tide data to standardized TideData format.
+
+        Always returns a dict with reasonable defaults (never None) so callers can safely do .get().
+        """
+        # Default safe tide dict
+        default = {
+            "state": "unknown",
+            "strength": 0,
+            "next_high": "",
+            "next_low": "",
+            "confidence": "unknown",
+            "source": "unknown",
+            "forecast": {},
+        }
+
         if not raw_tide:
-            return None
+            return default
 
         try:
             strength_val = raw_tide.get("strength", 0)
@@ -134,17 +189,29 @@ class DataFormatter:
             except Exception:
                 strength_int = 0
 
+            next_high = raw_tide.get("next_high") or ""
+            next_low = raw_tide.get("next_low") or ""
+            confidence = raw_tide.get("confidence") or raw_tide.get("trust") or "unknown"
+            source = raw_tide.get("source") or "unknown"
+
+            forecast = {}
+            if isinstance(raw_tide.get("forecast"), dict):
+                forecast = raw_tide.get("forecast")
+            elif isinstance(raw_tide.get("forecast"), list):
+                forecast = {"items": raw_tide.get("forecast")}
+
             return {
                 "state": str(raw_tide.get("state", "unknown")),
                 "strength": strength_int,
-                "next_high": str(raw_tide.get("next_high", "")),
-                "next_low": str(raw_tide.get("next_low", "")),
-                "confidence": str(raw_tide.get("confidence", "unknown")),
-                "source": str(raw_tide.get("source", "unknown")),
+                "next_high": str(next_high),
+                "next_low": str(next_low),
+                "confidence": str(confidence),
+                "source": str(source),
+                "forecast": forecast,
             }
         except Exception as e:
             _LOGGER.error("Error formatting tide data: %s", e, exc_info=True)
-            return None
+            return default
 
     @staticmethod
     def format_astro_data(raw_astro: Dict[str, Any]) -> AstroData:
@@ -161,7 +228,16 @@ class DataFormatter:
             }
         except Exception as e:
             _LOGGER.error("Error formatting astro data: %s", e, exc_info=True)
-            return {}
+            # Return a minimal dict to keep callers safe
+            return {
+                "moon_phase": None,
+                "moonrise": None,
+                "moonset": None,
+                "moon_transit": None,
+                "moon_underfoot": None,
+                "sunrise": None,
+                "sunset": None,
+            }
 
     @staticmethod
     def format_component_scores(raw_scores: Dict[str, Any]) -> ComponentScores:
@@ -419,13 +495,17 @@ class DataFormatter:
                 _LOGGER.error("Failed to normalize/format forecast: %s", exc, exc_info=True)
                 formatted_forecast = {}
 
+        # Ensure marine and tide are consistent shapes (never None)
+        marine_out = DataFormatter.format_marine_data(marine) if marine else {"current": {}, "forecast": {}}
+        tide_out = DataFormatter.format_tide_data(tide) if tide else {"state": "unknown", "strength": 0, "next_high": "", "next_low": "", "confidence": "unknown", "source": "unknown", "forecast": {}}
+
         return {
             "score": round(float(_safe_float(score, 0.0)), 1),
             "conditions": str(conditions or ""),
             "component_scores": DataFormatter.format_component_scores(component_scores or {}),
             "weather": DataFormatter.format_weather_data(weather or {}),
-            "marine": DataFormatter.format_marine_data(marine),
-            "tide": DataFormatter.format_tide_data(tide),
+            "marine": marine_out,
+            "tide": tide_out,
             "astro": DataFormatter.format_astro_data(astro or {}),
             "forecast": formatted_forecast,
             "mode": mode,
