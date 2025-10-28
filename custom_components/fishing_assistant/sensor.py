@@ -39,8 +39,8 @@ class OpenMeteoAdapter:
     Adapter to expose a small, defensive interface compatible with the WeatherFetcher expectations.
 
     It wraps the OpenMeteoClient (which returns normalized hourly items) and exposes:
-      - async get_forecast(days) -> dict keyed by ISO date with normalized daily values
-      - async get_current() -> dict with normalized current weather fields
+      - async get_forecast(days) -> dict keyed by ISO date with normalized daily values (or None on failure)
+      - async get_current() -> dict with normalized current weather fields (or None on failure)
     """
 
     def __init__(
@@ -55,12 +55,12 @@ class OpenMeteoAdapter:
         self._lon = longitude
         self._include_marine = include_marine
 
-    async def get_forecast(self, days: int = 7) -> Dict[str, Dict]:
+    async def get_forecast(self, days: int = 7) -> Optional[Dict[str, Dict]]:
         hourly = await self._client.fetch_hourly_forecast(
             self._lat, self._lon, include_marine=self._include_marine, forecast_days=days
         )
         if not hourly or not isinstance(hourly, list):
-            return {}
+            return None
 
         per_day: Dict[str, Dict[str, Any]] = {}
         counts: Dict[str, int] = {}
@@ -161,7 +161,7 @@ class OpenMeteoAdapter:
                 "pressure": float(avg_pressure) if avg_pressure is not None else None,
             }
 
-        return final
+        return final or None
 
     async def get_current(self) -> Optional[Dict]:
         hourly = await self._client.fetch_hourly_forecast(
@@ -246,6 +246,18 @@ async def async_setup_entry(
     data = config_entry.data
     mode = data.get(CONF_MODE, MODE_FRESHWATER)
 
+    # Validate critical config keys early (fail loudly)
+    for key in ("name", "latitude", "longitude"):
+        if key not in data:
+            _LOGGER.error("Config entry missing required key: %s", key)
+            raise RuntimeError(f"Config entry missing required key: {key}")
+    try:
+        float(data["latitude"])
+        float(data["longitude"])
+    except Exception:
+        _LOGGER.error("Invalid latitude/longitude in config entry: %s / %s", data.get("latitude"), data.get("longitude"))
+        raise RuntimeError("Invalid latitude/longitude in config entry")
+
     if mode == MODE_OCEAN:
         await _setup_ocean_sensors(hass, config_entry, async_add_entities)
     else:
@@ -257,24 +269,41 @@ async def _setup_freshwater_sensors(hass, config_entry, async_add_entities):
     data = config_entry.data
     sensors = []
 
+    # Validate required keys (fail loudly instead of defaulting)
+    if "name" not in data or "latitude" not in data or "longitude" not in data:
+        _LOGGER.error("Freshwater config missing name/latitude/longitude")
+        raise RuntimeError("Freshwater config missing required keys")
+
     name = data["name"]
     lat = data["latitude"]
     lon = data["longitude"]
-    fish_list = data["fish"]
+    fish_list = data.get("fish")
     body_type = data.get("body_type")
     tz = data.get("timezone")
     elevation = data.get("elevation")
     period_type = data.get(CONF_TIME_PERIODS, PERIOD_FULL_DAY)
 
+    if not isinstance(fish_list, list) or not fish_list:
+        _LOGGER.error("Freshwater config must include a non-empty 'fish' list")
+        raise RuntimeError("Freshwater config missing fish list")
+
     use_open_meteo = data.get(CONF_USE_OPEN_METEO, True)
-    open_meteo_adapter = None
-    if use_open_meteo:
-        session = async_get_clientsession(hass)
-        client = OpenMeteoClient(session=session)
-        open_meteo_adapter = OpenMeteoAdapter(client, lat, lon, include_marine=False)
+    if not use_open_meteo:
+        _LOGGER.error("Only Open-Meteo is supported; config must enable use_open_meteo")
+        raise RuntimeError("Open-Meteo must be enabled (no HA weather entity fallback)")
+
+    session = async_get_clientsession(hass)
+    client = OpenMeteoClient(session=session)
+    open_meteo_adapter = OpenMeteoAdapter(client, lat, lon, include_marine=False)
 
     species_loader = SpeciesLoader(hass)
     await species_loader.async_load_profiles()
+
+    # Ensure each selected fish exists in species profiles
+    for fish in fish_list:
+        if species_loader.get_species(fish) is None:
+            _LOGGER.error("Selected freshwater species not found in species profiles: %s", fish)
+            raise RuntimeError(f"Missing species profile for: {fish}")
 
     # WeatherFetcher no longer accepts a weather_entity parameter.
     weather_fetcher = WeatherFetcher(
@@ -317,23 +346,31 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
     data = config_entry.data
     sensors = []
 
+    # Validate keys
+    if "name" not in data or "latitude" not in data or "longitude" not in data:
+        _LOGGER.error("Ocean config missing name/latitude/longitude")
+        raise RuntimeError("Ocean config missing required keys")
+
     name = data["name"]
     lat = data["latitude"]
     lon = data["longitude"]
 
     use_open_meteo = data.get(CONF_USE_OPEN_METEO, True)
-    open_meteo_adapter = None
-    if use_open_meteo:
-        session = async_get_clientsession(hass)
-        client = OpenMeteoClient(session=session)
-        open_meteo_adapter = OpenMeteoAdapter(
-            client, lat, lon, include_marine=data.get(CONF_MARINE_ENABLED, True)
-        )
+    if not use_open_meteo:
+        _LOGGER.error("Only Open-Meteo is supported; config must enable use_open_meteo")
+        raise RuntimeError("Open-Meteo must be enabled (no HA weather entity fallback)")
+
+    session = async_get_clientsession(hass)
+    client = OpenMeteoClient(session=session)
+    open_meteo_adapter = OpenMeteoAdapter(
+        client, lat, lon, include_marine=data.get(CONF_MARINE_ENABLED, True)
+    )
 
     location_key = f"{name.lower().replace(' ', '_')}"
 
     tide_proxy = None
     marine_fetcher = None
+
     # WeatherFetcher no longer accepts a weather_entity parameter.
     weather_fetcher = WeatherFetcher(
         hass,
@@ -464,7 +501,11 @@ class FishScoreSensor(SensorEntity):
         }
 
     async def async_update(self):
-        """Fetch the current score and forecast."""
+        """Fetch the current score and forecast.
+
+        NOTE: This method is intentionally strict: if required data sources fail (weather/forecast),
+        exceptions will surface so the user sees the error and can fix configuration/data sources.
+        """
         now = dt_util.now()
         update_hours = [0, 6, 12, 18]
 
@@ -477,12 +518,10 @@ class FishScoreSensor(SensorEntity):
             _LOGGER.debug("Already updated this hour for %s", self._name)
             return
 
+        # Do not swallow exceptions silently; log and re-raise so failures are visible.
         try:
             weather_data_raw = await self._weather_fetcher.get_weather_data()
-            if not weather_data_raw:
-                _LOGGER.warning("No weather data available for freshwater sensor %s", self._name)
-                return
-
+            # WeatherFetcher now raises on failure; if it returns, we assume it provided valid dict.
             astro_data = await self._get_astro_data()
 
             result = self._scorer.calculate_score(
@@ -495,7 +534,7 @@ class FishScoreSensor(SensorEntity):
                 _LOGGER.error(
                     "Scorer returned unexpected result type for %s: %s", self._name, type(result)
                 )
-                return
+                raise RuntimeError("Scorer returned unexpected result type")
 
             self._state = result.get("score")
             self._attrs.update(
@@ -507,6 +546,7 @@ class FishScoreSensor(SensorEntity):
                 }
             )
 
+            # Forecast: let errors surface (WeatherFetcher.get_forecast raises on failure)
             forecast_raw = await self._weather_fetcher.get_forecast(days=7)
             if forecast_raw and isinstance(forecast_raw, dict):
                 forecast_list = []
@@ -551,9 +591,10 @@ class FishScoreSensor(SensorEntity):
                 self._attrs.get("component_scores"),
             )
 
-        except Exception as e:
-            _LOGGER.exception("Error updating freshwater sensor %s: %s", self._name, e)
-            self._state = None
+        except Exception:
+            _LOGGER.exception("Error updating freshwater sensor %s - bubbling up", self._name)
+            # Re-raise so the failure is visible to the system/operator.
+            raise
 
     async def _get_astro_data(self):
         """Get astronomical data from Home Assistant (sun + moon)."""
@@ -689,7 +730,10 @@ class OceanFishingScoreSensor(SensorEntity):
         }
 
     async def async_update(self):
-        """Update the fishing score and package all telemetry into the main sensor attributes."""
+        """Update the fishing score and package all telemetry into the main sensor attributes.
+
+        This method intentionally surfaces exceptions for critical failures (weather/forecast/tide/marine).
+        """
         now = dt_util.now()
         update_hours = [0, 6, 12, 18]
 
@@ -704,15 +748,11 @@ class OceanFishingScoreSensor(SensorEntity):
             return
 
         try:
-            # Gather raw data
+            # Gather raw data (WeatherFetcher now raises on failure)
             weather_data_raw = await self._weather_fetcher.get_weather_data()
             tide_data_raw = await self._tide_proxy.get_tide_data() if self._tide_proxy else None
             marine_data_raw = await self._marine_fetcher.get_marine_data() if self._marine_fetcher else None
             astro_data = await self._get_astro_data()
-
-            if not weather_data_raw:
-                _LOGGER.warning("No weather data available for ocean sensor %s", self._name)
-                return
 
             # Calculate score using scorer
             result = self._scorer.calculate_score(
@@ -729,12 +769,12 @@ class OceanFishingScoreSensor(SensorEntity):
                     self._name,
                     type(result),
                 )
-                return
+                raise RuntimeError("Scorer returned unexpected result type")
 
             # Update numeric state
             self._state = result.get("score")
 
-            # Prepare forecast raw if available
+            # Forecast (may raise) — let failures bubble up
             forecast_raw = await self._weather_fetcher.get_forecast(days=7)
 
             # Use DataFormatter to produce canonical sensor attributes that include
@@ -775,7 +815,7 @@ class OceanFishingScoreSensor(SensorEntity):
                 safety_status, safety_reasons = self._scorer.check_safety(weather_formatted, marine_formatted)
                 self._attrs["safety"] = {"status": safety_status, "reasons": safety_reasons}
             except Exception:
-                # Non-fatal if safety check fails
+                # Non-fatal if safety check fails (keep updating other data)
                 _LOGGER.debug("Safety check failed while updating ocean sensor attributes", exc_info=True)
 
             self._last_update_hour = now.hour
@@ -787,9 +827,9 @@ class OceanFishingScoreSensor(SensorEntity):
                 self._attrs.get("component_scores"),
             )
 
-        except Exception as e:
-            _LOGGER.exception("Error updating ocean fishing score for %s: %s", self._name, e)
-            self._state = None
+        except Exception:
+            _LOGGER.exception("Error updating ocean fishing score for %s - bubbling up", self._name)
+            raise
 
     async def _get_astro_data(self):
         """Get astronomical data from Home Assistant."""
@@ -850,4 +890,5 @@ class OceanFishingScoreSensor(SensorEntity):
         except Exception:
             _LOGGER.debug("Error reading species_profile for %s", self._name, exc_info=True)
 
+        # Run initial update - allow errors to surface
         await self.async_update()

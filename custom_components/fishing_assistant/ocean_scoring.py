@@ -2,7 +2,8 @@
 
 This version hardens datetime handling (timezone-aware via Home Assistant dt_util),
 defensive parsing of input shapes (forecast, astro, tide, marine), and aligns
-behavior with BaseScorer's expectations (finite numeric component scores).
+behavior with the "fail loudly" policy preferred by the user: required missing
+data will raise errors rather than silently returning defaults.
 """
 
 from __future__ import annotations
@@ -25,6 +26,9 @@ from .const import (
     LIGHT_DAY,
     LIGHT_DUSK,
     LIGHT_NIGHT,
+    CONF_MARINE_ENABLED,
+    CONF_TIDE_MODE,
+    TIDE_MODE_PROXY,
 )
 from .species_loader import SpeciesLoader
 from .helpers.astro import calculate_astronomy_forecast
@@ -61,72 +65,73 @@ class OceanFishingScorer(BaseScorer):
         self._astro_cache_time: Optional[datetime] = None
 
     async def async_initialize(self) -> None:
-        """Initialize the scorer asynchronously (load profiles, prefetch astro)."""
+        """Initialize the scorer asynchronously (load profiles, prefetch astro).
+
+        This method is strict: if a requested species profile cannot be located,
+        initialization raises an error so calling code knows configuration is invalid.
+        """
         if self._initialized:
             return
+
+        if not self.species:
+            _LOGGER.error("No species configured for OceanFishingScorer")
+            raise RuntimeError("OceanFishingScorer requires at least one species id")
 
         try:
             if self.species_loader:
                 await self.species_loader.async_load_profiles()
 
-            # Load species profile (first species or fallback)
-            species_id = self.species[0] if self.species else "general_mixed"
+            species_id = self.species[0]
 
+            # Require a real species profile — do not silently fall back.
             if self.species_loader:
-                self.species_profile = self.species_loader.get_species(species_id) or {}
-
-            if not self.species_profile:
-                _LOGGER.warning("Species profile '%s' not found, using fallback", species_id)
-                self.species_profile = self._get_fallback_profile()
-            else:
-                _LOGGER.debug("Loaded species profile: %s", self.species_profile.get("name", species_id))
-                # Update species_profiles dict for BaseScorer in a best-effort way
+                profile = self.species_loader.get_species(species_id)
+                if not profile:
+                    _LOGGER.error("Species profile '%s' not found during OceanFishingScorer initialization", species_id)
+                    raise RuntimeError(f"Species profile '{species_id}' not found")
+                self.species_profile = profile
+                # Update species_profiles dict for BaseScorer
                 try:
                     self.species_profiles[species_id] = self.species_profile
                 except Exception:
                     _LOGGER.debug("Unable to update species_profiles cache for %s", species_id)
+            else:
+                # If no loader available, require species_profiles to contain the profile
+                profile = self.species_profiles.get(species_id)
+                if not profile:
+                    _LOGGER.error("No species_loader and no species_profiles entry for %s", species_id)
+                    raise RuntimeError(f"Missing species profile for {species_id}")
+                self.species_profile = profile
 
-            # Pre-load astronomical forecast if hass is available
+            # Pre-load astronomical forecast if hass is available; failures here are logged but non-fatal
             if self.hass:
                 await self._refresh_astro_cache()
 
             self._initialized = True
 
-        except Exception as e:
-            _LOGGER.exception("Error initializing ocean scorer: %s", e)
-            self.species_profile = self._get_fallback_profile()
-            self._initialized = True
+        except Exception:
+            _LOGGER.exception("Error initializing ocean scorer - aborting initialization")
+            raise
 
     async def _refresh_astro_cache(self) -> None:
         """Refresh astronomical forecast cache (best-effort)."""
         try:
             if self.latitude is None or self.longitude is None or not self.hass:
-                _LOGGER.debug("No coordinates or hass unavailable; skipping astro cache refresh")
+                _LOGGER.debug("No coordinates or hass unavailable; cannot refresh astro cache")
+                self._astro_forecast_cache = None
+                self._astro_cache_time = None
                 return
 
             _LOGGER.debug("Refreshing astronomical forecast cache for lat=%s lon=%s", self.latitude, self.longitude)
-            # calculate_astronomy_forecast returns a dict keyed by ISO date strings
             cache = await calculate_astronomy_forecast(self.hass, self.latitude, self.longitude, days=7)
             self._astro_forecast_cache = cache
             self._astro_cache_time = dt_util.now()
             size = len(cache) if cache is not None and hasattr(cache, "__len__") else 0
             _LOGGER.debug("Astronomical cache refreshed with %d entries", size)
-        except Exception as e:
-            _LOGGER.exception("Error refreshing astro cache: %s", e)
+        except Exception:
+            _LOGGER.exception("Error refreshing astro cache")
             self._astro_forecast_cache = None
             self._astro_cache_time = None
-
-    def _get_fallback_profile(self) -> Dict[str, Any]:
-        """Return a fallback species profile."""
-        return {
-            "id": "general_mixed",
-            "name": "General Mixed Species",
-            "active_months": list(range(1, 13)),
-            "best_tide": "moving",
-            "light_preference": "dawn_dusk",
-            "cloud_bonus": 0.5,
-            "wave_preference": "moderate",
-        }
 
     def calculate_score(
         self,
@@ -136,37 +141,38 @@ class OceanFishingScorer(BaseScorer):
         marine_data: Optional[Dict[str, Any]] = None,
         current_time: Optional[Any] = None,
     ) -> Dict[str, Any]:
-        """Calculate the fishing score with error handling and attach forecast if embedded."""
+        """Calculate the fishing score. This method validates inputs and raises on critical missing data."""
+
+        # Validate weather_data shape
+        if not weather_data or not isinstance(weather_data, dict):
+            _LOGGER.error("OceanFishingScorer requires non-empty weather_data dict")
+            raise RuntimeError("Missing or invalid weather_data for ocean scoring")
+
+        # If config requires marine data, ensure it is present
+        if self.config.get(CONF_MARINE_ENABLED, True) and marine_data is None:
+            _LOGGER.error("Marine data required by configuration but not provided to OceanFishingScorer")
+            raise RuntimeError("Missing required marine data")
+
+        # If config uses tide proxy, require tide_data presence
+        if self.config.get(CONF_TIDE_MODE) == TIDE_MODE_PROXY and tide_data is None:
+            _LOGGER.error("Tide proxy configured but tide_data not provided to OceanFishingScorer")
+            raise RuntimeError("Missing required tide data for proxy tide mode")
+
+        # Delegate to BaseScorer for the numeric calculation — keep defensive parsing inside
+        result = super().calculate_score(weather_data, astro_data, tide_data, marine_data, current_time)
+
+        # Attach formatted forecast when present (tolerant shapes) — failures here are not fatal
         try:
-            result = super().calculate_score(
-                weather_data or {}, astro_data or {}, tide_data, marine_data, current_time
-            )
+            embedded_forecast = None
+            if isinstance(weather_data, dict):
+                embedded_forecast = weather_data.get("forecast") or weather_data.get("forecasts")
+            if isinstance(embedded_forecast, list):
+                formatted = self._format_forecast(embedded_forecast, astro_data or {}, tide_data, marine_data)
+                result["forecast"] = formatted
+        except Exception:
+            _LOGGER.debug("Failed to format embedded forecast", exc_info=True)
 
-            # Attach formatted forecast when present (tolerant shapes)
-            try:
-                embedded_forecast = None
-                if isinstance(weather_data, dict):
-                    embedded_forecast = weather_data.get("forecast") or weather_data.get("forecasts")
-                if isinstance(embedded_forecast, list):
-                    formatted = self._format_forecast(
-                        embedded_forecast, astro_data or {}, tide_data, marine_data
-                    )
-                    result["forecast"] = formatted
-            except Exception:
-                _LOGGER.debug("Failed to format embedded forecast", exc_info=True)
-
-            return result
-
-        except Exception as e:
-            _LOGGER.exception("Error calculating ocean score: %s", e)
-            return DataFormatter.format_score_result(
-                {
-                    "score": 5.0,
-                    "conditions_summary": "Error calculating score",
-                    "component_scores": {},
-                    "breakdown": {},
-                }
-            )
+        return result
 
     def _calculate_base_score(
         self,
@@ -176,84 +182,105 @@ class OceanFishingScorer(BaseScorer):
         marine_data: Optional[Dict[str, Any]] = None,
         current_time: Optional[Any] = None,
     ) -> Dict[str, float]:
-        """Calculate component scores with defensive parsing and logging."""
-        try:
-            # Defensive formatting using DataFormatter (ensures stable shapes)
-            weather = DataFormatter.format_weather_data(weather_data or {})
-            astro = DataFormatter.format_astro_data(astro_data or {})
-            tide = DataFormatter.format_tide_data(tide_data) if tide_data else None
-            marine = DataFormatter.format_marine_data(marine_data) if marine_data else None
+        """Calculate component scores with defensive parsing and logging.
+        Raises RuntimeError when critical pieces are missing per configuration.
+        """
+        # Defensive formatting using DataFormatter (ensures stable shapes)
+        weather = DataFormatter.format_weather_data(weather_data or {})
+        astro = DataFormatter.format_astro_data(astro_data or {})
+        tide = DataFormatter.format_tide_data(tide_data) if tide_data else None
+        marine = DataFormatter.format_marine_data(marine_data) if marine_data else None
 
-            if current_time is None:
-                current_time = dt_util.now()
-            else:
-                parsed = self._coerce_datetime(current_time)
-                current_time = parsed or dt_util.now()
+        # If formatting produced no useful weather, fail loudly
+        if not weather:
+            _LOGGER.error("Formatted weather data is empty; cannot calculate ocean base score")
+            raise RuntimeError("Empty formatted weather data")
 
-            components: Dict[str, float] = {}
+        # Respect configuration requirements: if marine is required but missing, raise
+        if self.config.get(CONF_MARINE_ENABLED, True) and marine is None:
+            _LOGGER.error("Configuration requires marine data but none provided to _calculate_base_score")
+            raise RuntimeError("Missing marine data")
 
-            # Temperature Score
-            temp = weather.get("temperature")
-            components["temperature"] = self._normalize_score(self._score_temperature(temp)) if temp is not None else 5.0
+        if current_time is None:
+            current_time = dt_util.now()
+        else:
+            parsed = self._coerce_datetime(current_time)
+            current_time = parsed or dt_util.now()
 
-            # Wind Score
-            wind_speed = weather.get("wind_speed") or 0.0
-            wind_gust = weather.get("wind_gust") or wind_speed
+        components: Dict[str, float] = {}
+
+        # Temperature Score
+        temp = weather.get("temperature")
+        if temp is None:
+            _LOGGER.debug("Temperature missing from weather data; using neutral score")
+            components["temperature"] = 5.0
+        else:
+            components["temperature"] = self._normalize_score(self._score_temperature(temp))
+
+        # Wind Score
+        wind_speed = weather.get("wind_speed")
+        wind_gust = weather.get("wind_gust") if weather.get("wind_gust") is not None else wind_speed
+        if wind_speed is None:
+            _LOGGER.debug("Wind speed missing from weather data; using neutral wind score")
+            components["wind"] = 5.0
+        else:
             components["wind"] = self._normalize_score(self._score_wind(wind_speed, wind_gust))
 
-            # Pressure Score
-            pressure = weather.get("pressure") or 1013.0
+        # Pressure Score
+        pressure = weather.get("pressure")
+        if pressure is None:
+            _LOGGER.debug("Pressure missing from weather data; using neutral pressure score")
+            components["pressure"] = 5.0
+        else:
             components["pressure"] = self._normalize_score(self._score_pressure(pressure))
 
-            # Tide Score
-            if tide:
-                tide_state = tide.get("state", "unknown")
-                tide_strength_raw = tide.get("strength", None)
-                try:
-                    tide_strength = max(0.0, min(1.0, float(tide_strength_raw))) if tide_strength_raw is not None else 0.5
-                except Exception:
-                    tide_strength = 0.5
-                components["tide"] = self._normalize_score(self._score_tide(tide_state, tide_strength))
-            else:
-                _LOGGER.debug("Tide data missing, using neutral tide score")
-                components["tide"] = 5.0
+        # Tide Score
+        if tide:
+            tide_state = tide.get("state", "unknown")
+            tide_strength_raw = tide.get("strength", None)
+            try:
+                tide_strength = max(0.0, min(1.0, float(tide_strength_raw))) if tide_strength_raw is not None else 0.5
+            except Exception:
+                tide_strength = 0.5
+            components["tide"] = self._normalize_score(self._score_tide(tide_state, tide_strength))
+        else:
+            # If tide data is required by config, raise; otherwise neutral but logged
+            if self.config.get(CONF_TIDE_MODE) == TIDE_MODE_PROXY:
+                _LOGGER.error("Tide proxy mode configured but tide data missing in _calculate_base_score")
+                raise RuntimeError("Missing tide data for proxy tide mode")
+            _LOGGER.debug("Tide data missing, using neutral tide score")
+            components["tide"] = 5.0
 
-            # Wave Score (marine.current may be present)
-            if marine and isinstance(marine, dict):
-                current_marine = marine.get("current") or {}
-                # DataFormatter uses 'wave_height' key
-                wave_height = current_marine.get("wave_height", current_marine.get("swell_wave_height", 1.0))
-                components["waves"] = self._normalize_score(self._score_waves(wave_height))
-            else:
-                _LOGGER.debug("Marine data missing, using neutral wave score")
+        # Wave Score (marine.current may be present)
+        if marine and isinstance(marine, dict):
+            current_marine = marine.get("current") or {}
+            # DataFormatter uses 'wave_height' key
+            wave_height = current_marine.get("wave_height", current_marine.get("swell_wave_height"))
+            if wave_height is None:
+                _LOGGER.debug("Wave height missing in marine.current; using neutral waves score")
                 components["waves"] = 5.0
+            else:
+                components["waves"] = self._normalize_score(self._score_waves(wave_height))
+        else:
+            if self.config.get(CONF_MARINE_ENABLED, True):
+                _LOGGER.error("Marine data required but missing when scoring waves")
+                raise RuntimeError("Missing marine data for scoring waves")
+            _LOGGER.debug("Marine data missing, using neutral wave score")
+            components["waves"] = 5.0
 
-            # Time of Day Score
-            components["time"] = self._normalize_score(self._score_time_of_day(current_time, astro))
+        # Time of Day Score
+        components["time"] = self._normalize_score(self._score_time_of_day(current_time, astro))
 
-            # Season Score
-            components["season"] = self._normalize_score(self._score_season(current_time))
+        # Season Score
+        components["season"] = self._normalize_score(self._score_season(current_time))
 
-            # Moon Phase Score
-            moon_phase = None
-            if isinstance(astro, dict):
-                moon_phase = astro.get("moon_phase") or astro.get("moon")
-            components["moon"] = self._normalize_score(self._score_moon(moon_phase))
+        # Moon Phase Score
+        moon_phase = None
+        if isinstance(astro, dict):
+            moon_phase = astro.get("moon_phase") or astro.get("moon")
+        components["moon"] = self._normalize_score(self._score_moon(moon_phase))
 
-            return components
-
-        except Exception as e:
-            _LOGGER.exception("Error in _calculate_base_score: %s", e)
-            return {
-                "temperature": 5.0,
-                "wind": 5.0,
-                "pressure": 5.0,
-                "tide": 5.0,
-                "waves": 5.0,
-                "time": 5.0,
-                "season": 5.0,
-                "moon": 5.0,
-            }
+        return components
 
     def _get_factor_weights(self) -> Dict[str, float]:
         """Get factor weights for scoring (tunable)."""
@@ -287,23 +314,23 @@ class OceanFishingScorer(BaseScorer):
 
                 # Tolerant extraction of common weather fields
                 temperature = entry.get("temperature") or entry.get("temp") or entry.get("temperature_2m") or entry.get("t")
-                wind_speed = entry.get("wind_speed") or entry.get("wind") or entry.get("windspeed") or 0.0
+                wind_speed = entry.get("wind_speed") or entry.get("wind") or entry.get("windspeed")
                 wind_gust = entry.get("wind_gust") or entry.get("windspeed_gusts")
                 pressure = entry.get("pressure") or entry.get("mslp") or entry.get("pressure_hpa")
-                precipitation = entry.get("precipitation") or entry.get("precip") or entry.get("pop") or 0
-                cloud_cover = entry.get("cloud_cover") or entry.get("clouds") or entry.get("cloudcover") or 0
+                precipitation = entry.get("precipitation") or entry.get("precip") or entry.get("pop")
+                cloud_cover = entry.get("cloud_cover") or entry.get("clouds") or entry.get("cloudcover")
                 humidity = entry.get("humidity") or entry.get("rh") or None
 
                 # Coerce wind numeric value for internal scoring
                 try:
-                    ws_val = float(wind_speed)
+                    ws_val = float(wind_speed) if wind_speed is not None else 0.0
                 except Exception:
                     ws_val = 0.0
 
                 forecast_weather = {
                     "temperature": temperature,
                     "wind_speed": ws_val,
-                    "wind_gust": wind_gust if wind_gust is not None else (ws_val * 1.5 if ws_val else 0.0),
+                    "wind_gust": wind_gust if wind_gust is not None else (ws_val * 1.5 if ws_val else None),
                     "pressure": pressure,
                     "precipitation": precipitation,
                     "cloud_cover": cloud_cover,
@@ -354,8 +381,8 @@ class OceanFishingScorer(BaseScorer):
                         "component_scores": normalized_scores,
                     }
                 )
-            except Exception as e:
-                _LOGGER.warning("Error formatting forecast entry: %s. Entry=%s", e, entry, exc_info=True)
+            except Exception:
+                _LOGGER.warning("Error formatting forecast entry: %s. Entry=%s", entry, exc_info=True)
                 continue
 
         return formatted_forecast
@@ -932,16 +959,23 @@ class OceanFishingScorer(BaseScorer):
             return LIGHT_DAY
 
     def check_safety(self, weather_data: Optional[Dict[str, Any]], marine_data: Optional[Dict[str, Any]]) -> (str, List[str]):
-        """Assess safety for fishing, returning ('safe'|'caution'|'unsafe'|'unknown', reasons)."""
+        """Assess safety for fishing, returning ('safe'|'caution'|'unsafe'|'unknown', reasons).
+
+        This method now requires a valid habitat preset in config; missing or invalid presets
+        will raise so configuration errors are visible.
+        """
         if not weather_data and not marine_data:
             return "unknown", ["Insufficient data to assess safety"]
 
-        habitat_preset = (self.config or {}).get(CONF_HABITAT_PRESET, "rocky_point")
-        habitat = HABITAT_PRESETS.get(habitat_preset) or HABITAT_PRESETS.get("rocky_point") or {
-            "max_wind_speed": 30,
-            "max_gust_speed": 45,
-            "max_wave_height": 2.5,
-        }
+        habitat_preset = (self.config or {}).get(CONF_HABITAT_PRESET)
+        if not habitat_preset:
+            _LOGGER.error("check_safety requires a habitat preset in scorer config")
+            raise RuntimeError("Missing habitat preset in configuration")
+
+        habitat = HABITAT_PRESETS.get(habitat_preset)
+        if not habitat:
+            _LOGGER.error("Invalid habitat preset '%s' in config", habitat_preset)
+            raise RuntimeError(f"Invalid habitat preset: {habitat_preset}")
 
         # Defensive extraction with fallbacks and coercion
         def _float_or_zero(v):
