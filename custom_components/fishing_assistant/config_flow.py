@@ -137,36 +137,34 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if self.species_loader:
             freshwater_species = self.species_loader.get_species_by_type("freshwater")
 
-        # Check if species loaded successfully
+        # If species list is missing or empty, fail loudly so the issue can be fixed
         if not freshwater_species:
-            _LOGGER.debug("No freshwater species found in species_profiles.json; using fallback options")
-            species_options = [
-                {"value": "bass", "label": "🐟 Bass"},
-                {"value": "pike", "label": "🐟 Pike"},
-                {"value": "trout", "label": "🐟 Trout"},
-                {"value": "carp", "label": "🐟 Carp"},
-            ]
-        else:
-            species_options = []
-            for species in sorted(freshwater_species, key=lambda s: s.get("name", s["id"])):
-                emoji = species.get("emoji", "🐟")
-                name = species.get("name", species["id"])
-                species_id = species["id"]
+            _LOGGER.error(
+                "No freshwater species found in species_profiles.json; aborting config flow. "
+                "Please ensure species_profiles.json is present and valid."
+            )
+            raise RuntimeError("Missing freshwater species profiles")
 
-                # Add active months info
-                active_months = species.get("active_months", [])
-                if len(active_months) == 12:
-                    season_info = "Year-round"
-                elif len(active_months) > 0:
-                    season_info = f"Active: {len(active_months)} months"
-                else:
-                    season_info = ""
+        species_options = []
+        for species in sorted(freshwater_species, key=lambda s: s.get("name", s["id"])):
+            emoji = species.get("emoji", "🐟")
+            name = species.get("name", species["id"])
+            species_id = species["id"]
 
-                label = f"{emoji} {name}"
-                if season_info:
-                    label += f" ({season_info})"
+            # Add active months info
+            active_months = species.get("active_months", [])
+            if len(active_months) == 12:
+                season_info = "Year-round"
+            elif len(active_months) > 0:
+                season_info = f"Active: {len(active_months)} months"
+            else:
+                season_info = ""
 
-                species_options.append({"value": species_id, "label": label})
+            label = f"{emoji} {name}"
+            if season_info:
+                label += f" ({season_info})"
+
+            species_options.append({"value": species_id, "label": label})
 
         return self.async_show_form(
             step_id="freshwater",
@@ -302,41 +300,38 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     def _get_freshwater_schema(self, user_input: dict[str, Any] | None = None):
         """Get freshwater schema with defaults - used for error handling."""
-        # Fallback schema with basic species
-        species_options = [
-            {"value": "bass", "label": "🐟 Bass"},
-            {"value": "pike", "label": "🐟 Pike"},
-            {"value": "trout", "label": "🐟 Trout"},
-            {"value": "carp", "label": "🐟 Carp"},
-            {"value": "catfish", "label": "🐟 Catfish"},
-            {"value": "perch", "label": "🐟 Perch"},
-            {"value": "walleye", "label": "🐟 Walleye"},
-            {"value": "crappie", "label": "🐟 Crappie"},
-        ]
+        # Do not provide silent fallback species lists. Require species profiles to exist.
+        if not (self.species_loader and getattr(self.species_loader, "_profiles", None)):
+            _LOGGER.error(
+                "Attempted to show freshwater schema but species profiles are missing. "
+                "Please ensure species_profiles.json and SpeciesLoader are available."
+            )
+            raise RuntimeError("Missing species profiles for freshwater schema")
 
-        # If species loader is available, use it
-        if self.species_loader and getattr(self.species_loader, "_profiles", None):
-            freshwater_species = self.species_loader.get_species_by_type("freshwater")
-            if freshwater_species:
-                species_options = []
-                for species in sorted(freshwater_species, key=lambda s: s.get("name", s["id"])):
-                    emoji = species.get("emoji", "🐟")
-                    name = species.get("name", species["id"])
-                    species_id = species["id"]
+        freshwater_species = self.species_loader.get_species_by_type("freshwater")
+        if not freshwater_species:
+            _LOGGER.error("No freshwater species available when building schema.")
+            raise RuntimeError("No freshwater species available")
 
-                    active_months = species.get("active_months", [])
-                    if len(active_months) == 12:
-                        season_info = "Year-round"
-                    elif len(active_months) > 0:
-                        season_info = f"Active: {len(active_months)} months"
-                    else:
-                        season_info = ""
+        species_options = []
+        for species in sorted(freshwater_species, key=lambda s: s.get("name", s["id"])):
+            emoji = species.get("emoji", "🐟")
+            name = species.get("name", species["id"])
+            species_id = species["id"]
 
-                    label = f"{emoji} {name}"
-                    if season_info:
-                        label += f" ({season_info})"
+            active_months = species.get("active_months", [])
+            if len(active_months) == 12:
+                season_info = "Year-round"
+            elif len(active_months) > 0:
+                season_info = f"Active: {len(active_months)} months"
+            else:
+                season_info = ""
 
-                    species_options.append({"value": species_id, "label": label})
+            label = f"{emoji} {name}"
+            if season_info:
+                label += f" ({season_info})"
+
+            species_options.append({"value": species_id, "label": label})
 
         return vol.Schema(
             {
@@ -422,8 +417,16 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             return await self.async_step_ocean_habitat()
 
-        # Build a comprehensive species list organized by region
-        regions = self.species_loader.get_regions_by_type("ocean") if self.species_loader else []
+        # Ensure regions/species are available; fail loudly if not
+        if not (self.species_loader and getattr(self.species_loader, "_profiles", None)):
+            _LOGGER.error("Species profiles missing when building ocean species list; aborting flow.")
+            raise RuntimeError("Missing species profiles for ocean species selection")
+
+        regions = self.species_loader.get_regions_by_type("ocean")
+        if not regions:
+            _LOGGER.error("No ocean regions found in species profiles; aborting flow.")
+            raise RuntimeError("No ocean regions available")
+
         species_options: list[dict[str, str]] = []
 
         # === SECTION 1: GENERAL REGION PROFILES ===
@@ -475,11 +478,12 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 label += f" ({season_info})"
             species_options.append({"value": species_id, "label": label})
 
+        # NOTE: No built-in default (previously 'general_mixed_gibraltar') — user must explicitly select.
         return self.async_show_form(
             step_id="ocean_species",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_SPECIES_ID, default="general_mixed_gibraltar"): selector.SelectSelector(
+                    vol.Required(CONF_SPECIES_ID): selector.SelectSelector(
                         selector.SelectSelectorConfig(options=species_options, mode="dropdown")
                     ),
                 }
@@ -500,12 +504,11 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 raw_hp = user_input.get(CONF_HABITAT_PRESET, "")
                 habitat_preset = str(raw_hp).strip() if raw_hp is not None else ""
                 if not habitat_preset or habitat_preset not in HABITAT_PRESETS:
-                    _LOGGER.warning(
-                        "Invalid or missing habitat_preset submitted: %s. Falling back to default: %s",
+                    _LOGGER.error(
+                        "Invalid or missing habitat_preset submitted: %s. Aborting to surface the issue.",
                         habitat_preset,
-                        HABITAT_ROCKY_POINT,
                     )
-                    habitat_preset = HABITAT_ROCKY_POINT
+                    raise ValueError("Invalid or missing habitat_preset")
 
                 # Store safe value
                 self.ocean_config[CONF_HABITAT_PRESET] = habitat_preset
