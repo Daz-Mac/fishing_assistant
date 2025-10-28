@@ -305,7 +305,13 @@ async def _setup_freshwater_sensors(hass, config_entry, async_add_entities):
 
 
 async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
-    """Set up ocean fishing sensors."""
+    """Set up ocean fishing sensors.
+
+    NOTE: Only the main OceanFishingScoreSensor is created by default. All raw telemetry
+    (tide, marine, weather) will be exposed as attributes on that sensor. This reduces
+    entity count and lets users create template sensors if they want separate numeric
+    entities.
+    """
     data = config_entry.data
     sensors = []
 
@@ -340,65 +346,13 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
     if data.get(CONF_MARINE_ENABLED, True):
         marine_fetcher = MarineDataFetcher(hass, lat, lon)
 
+    # Create only the aggregated OceanFishingScoreSensor by default
     sensors.append(
         OceanFishingScoreSensor(
             hass=hass,
             config_entry=config_entry,
             tide_proxy=tide_proxy,
             marine_fetcher=marine_fetcher,
-            weather_fetcher=weather_fetcher,
-            location_key=location_key,
-        )
-    )
-
-    if tide_proxy:
-        sensors.append(
-            TideStateSensor(
-                hass=hass,
-                config_entry=config_entry,
-                tide_proxy=tide_proxy,
-                location_key=location_key,
-            )
-        )
-        sensors.append(
-            TideStrengthSensor(
-                hass=hass,
-                config_entry=config_entry,
-                tide_proxy=tide_proxy,
-                location_key=location_key,
-            )
-        )
-
-    if marine_fetcher:
-        sensors.append(
-            WaveHeightSensor(
-                hass=hass,
-                config_entry=config_entry,
-                marine_fetcher=marine_fetcher,
-                location_key=location_key,
-            )
-        )
-        sensors.append(
-            WavePeriodSensor(
-                hass=hass,
-                config_entry=config_entry,
-                marine_fetcher=marine_fetcher,
-                location_key=location_key,
-            )
-        )
-
-    sensors.append(
-        WindSpeedSensor(
-            hass=hass,
-            config_entry=config_entry,
-            weather_fetcher=weather_fetcher,
-            location_key=location_key,
-        )
-    )
-    sensors.append(
-        WindGustSensor(
-            hass=hass,
-            config_entry=config_entry,
             weather_fetcher=weather_fetcher,
             location_key=location_key,
         )
@@ -657,7 +611,8 @@ class OceanFishingScoreSensor(SensorEntity):
         self._state = None
         self._last_update_hour: Optional[int] = None
 
-        self._attrs = {
+        # Minimal attributes initially; full canonical attributes will be produced on update
+        self._attrs: Dict[str, Any] = {
             "location": name,
             "location_key": location_key,
             "latitude": lat,
@@ -712,7 +667,7 @@ class OceanFishingScoreSensor(SensorEntity):
         }
 
     async def async_update(self):
-        """Update the fishing score."""
+        """Update the fishing score and package all telemetry into the main sensor attributes."""
         now = dt_util.now()
         update_hours = [0, 6, 12, 18]
 
@@ -725,6 +680,7 @@ class OceanFishingScoreSensor(SensorEntity):
             return
 
         try:
+            # Gather raw data
             weather_data_raw = await self._weather_fetcher.get_weather_data()
             tide_data_raw = await self._tide_proxy.get_tide_data() if self._tide_proxy else None
             marine_data_raw = await self._marine_fetcher.get_marine_data() if self._marine_fetcher else None
@@ -734,6 +690,7 @@ class OceanFishingScoreSensor(SensorEntity):
                 _LOGGER.warning("No weather data available for ocean sensor %s", self._name)
                 return
 
+            # Calculate score using scorer
             result = self._scorer.calculate_score(
                 weather_data=weather_data_raw,
                 astro_data=astro_data,
@@ -746,64 +703,46 @@ class OceanFishingScoreSensor(SensorEntity):
                 _LOGGER.error("Scorer returned unexpected result type for ocean sensor %s: %s", self._name, type(result))
                 return
 
+            # Update numeric state
             self._state = result.get("score")
-            self._attrs.update({
+
+            # Prepare forecast raw if available
+            forecast_raw = await self._weather_fetcher.get_forecast(days=7)
+
+            # Use DataFormatter to produce canonical sensor attributes that include
+            # formatted weather, marine, tide, astro and forecast structures.
+            formatted_attrs = DataFormatter.format_sensor_attributes(
+                score=self._state,
+                conditions=result.get("conditions_summary") or result.get("conditions") or "",
+                component_scores=result.get("component_scores") or {},
+                weather=weather_data_raw or {},
+                astro=astro_data or {},
+                mode="ocean",
+                species=[self._scorer.species_profile.get("id")] if getattr(self._scorer, "species_profile", None) else [self._attrs.get("species_focus")],
+                location=self._attrs.get("location"),
+                forecast=forecast_raw or {},
+                marine=marine_data_raw or {},
+                tide=tide_data_raw or {},
+            )
+
+            # Preserve some legacy keys for backward compatibility (rating / breakdown)
+            legacy_updates = {
                 "rating": result.get("rating"),
                 "breakdown": result.get("breakdown", {}),
-                "component_scores": result.get("component_scores", {}),
-                "last_updated": now.isoformat(),
-            })
-
-            # Tide handling - DataFormatter.format_tide_data now always returns a dict
-            if tide_data_raw:
-                tide_data = DataFormatter.format_tide_data(tide_data_raw) or {}
-                self._attrs["tide_state"] = tide_data.get("state", "unknown")
-
-            # Format weather/marine for safety checks - DataFormatter.format_marine_data returns {"current":..., "forecast":...}
-            weather_formatted = DataFormatter.format_weather_data(weather_data_raw)
-            marine_formatted = DataFormatter.format_marine_data(marine_data_raw) if marine_data_raw else {"current": {}, "forecast": {}}
-            # Safety check uses the normalized shapes
-            safety_status, safety_reasons = self._scorer.check_safety(weather_formatted, marine_formatted)
-            self._attrs["safety"] = {
-                "status": safety_status,
-                "reasons": safety_reasons
             }
 
-            forecast_raw = await self._weather_fetcher.get_forecast(days=7)
-            if forecast_raw and isinstance(forecast_raw, dict):
-                forecast_list = []
-                for date_str, data in forecast_raw.items():
-                    forecast_date = None
-                    try:
-                        forecast_date = dt_util.parse_datetime(date_str)
-                    except Exception:
-                        forecast_date = None
+            # Merge results: canonical formatted_attrs + legacy keys
+            self._attrs = {**formatted_attrs, **legacy_updates}
 
-                    if forecast_date is None:
-                        try:
-                            d = date.fromisoformat(date_str)
-                            forecast_date = datetime.combine(d, time.min, tzinfo=timezone.utc)
-                        except Exception:
-                            _LOGGER.debug("Unable to parse forecast date key: %s", date_str)
-                            continue
-
-                    if forecast_date.tzinfo is None:
-                        forecast_date = forecast_date.replace(tzinfo=timezone.utc)
-
-                    data = dict(data) if isinstance(data, dict) else {}
-                    data["datetime"] = forecast_date
-                    forecast_list.append(data)
-
-                tide_forecast = tide_data_raw.get("forecast") if tide_data_raw and isinstance(tide_data_raw, dict) else None
-                marine_forecast = marine_data_raw.get("forecast") if marine_data_raw and isinstance(marine_data_raw, dict) else None
-
-                forecast_scores = await self._scorer.calculate_forecast(
-                    weather_forecast=forecast_list,
-                    tide_forecast=tide_forecast,
-                    marine_forecast=marine_forecast,
-                )
-
-                self._attrs["forecast"] = forecast_scores
+            # Add a compact 'safety' summary (scorer.check_safety returns status + reasons)
+            try:
+                weather_formatted = DataFormatter.format_weather_data(weather_data_raw)
+                marine_formatted = DataFormatter.format_marine_data(marine_data_raw) if marine_data_raw else {"current": {}, "forecast": {}}
+                safety_status, safety_reasons = self._scorer.check_safety(weather_formatted, marine_formatted)
+                self._attrs["safety"] = {"status": safety_status, "reasons": safety_reasons}
+            except Exception:
+                # Non-fatal if safety check fails
+                _LOGGER.debug("Safety check failed while updating ocean sensor attributes", exc_info=True)
 
             self._last_update_hour = now.hour
 
