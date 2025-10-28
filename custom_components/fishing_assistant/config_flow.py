@@ -369,10 +369,10 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 self.ocean_config.update(user_input)
                 return await self.async_step_ocean_species()
 
-        # Get defaults - use HA config on first load, user_input on error
+        # Do NOT default latitude/longitude to HA config; require explicit input.
         default_name = user_input.get(CONF_NAME, "") if user_input else ""
-        default_lat = user_input.get(CONF_LATITUDE, self.hass.config.latitude) if user_input else self.hass.config.latitude
-        default_lon = user_input.get(CONF_LONGITUDE, self.hass.config.longitude) if user_input else self.hass.config.longitude
+        default_lat = user_input.get(CONF_LATITUDE, "") if user_input else ""
+        default_lon = user_input.get(CONF_LONGITUDE, "") if user_input else ""
 
         return self.async_show_form(
             step_id="ocean_location",
@@ -478,7 +478,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 label += f" ({season_info})"
             species_options.append({"value": species_id, "label": label})
 
-        # NOTE: No built-in default (previously 'general_mixed_gibraltar') — user must explicitly select.
+        # NOTE: No built-in default — user must explicitly select.
         return self.async_show_form(
             step_id="ocean_species",
             data_schema=vol.Schema(
@@ -650,25 +650,30 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_ocean_thresholds(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Configure safety thresholds."""
         if user_input is not None:
-            # Defensive: ensure required previous keys exist and coerce/validate types
+            # Strict: require coordinates to be present in ocean_config and valid — no HA fallback.
             try:
                 # Name
                 name = self.ocean_config.get(CONF_NAME) or DEFAULT_NAME
 
-                # Latitude / Longitude (coerce to float; if missing, default to HA config coords)
-                try:
-                    lat_raw = self.ocean_config.get(CONF_LATITUDE, self.hass.config.latitude)
-                    latitude = float(lat_raw)
-                except Exception:
-                    _LOGGER.warning("Invalid latitude in ocean_config: %s; using HA default", lat_raw)
-                    latitude = float(self.hass.config.latitude)
+                # Latitude / Longitude must be explicitly provided earlier in the flow
+                if CONF_LATITUDE not in self.ocean_config or CONF_LONGITUDE not in self.ocean_config:
+                    _LOGGER.error("Latitude/Longitude missing from ocean_config; aborting to surface the issue.")
+                    raise RuntimeError("Missing latitude/longitude in ocean_config")
+
+                lat_raw = self.ocean_config[CONF_LATITUDE]
+                lon_raw = self.ocean_config[CONF_LONGITUDE]
 
                 try:
-                    lon_raw = self.ocean_config.get(CONF_LONGITUDE, self.hass.config.longitude)
+                    latitude = float(lat_raw)
                     longitude = float(lon_raw)
                 except Exception:
-                    _LOGGER.warning("Invalid longitude in ocean_config: %s; using HA default", lon_raw)
-                    longitude = float(self.hass.config.longitude)
+                    _LOGGER.error("Invalid latitude/longitude values in ocean_config: lat=%s lon=%s", lat_raw, lon_raw)
+                    raise ValueError("Invalid latitude/longitude in ocean_config")
+
+                # Validate ranges
+                if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+                    _LOGGER.error("Latitude/longitude out of valid ranges: lat=%s lon=%s", latitude, longitude)
+                    raise ValueError("Latitude/longitude out of range")
 
                 habitat_preset = self.ocean_config.get(CONF_HABITAT_PRESET, HABITAT_ROCKY_POINT)
 
@@ -703,10 +708,10 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 return self.async_create_entry(title=name, data=final_config)
             except KeyError as ke:
                 _LOGGER.exception("Missing expected key when building final ocean config: %s", ke)
-                # Re-show thresholds form with a general error so user can try again
                 return self._show_ocean_thresholds_form(errors={"base": "unknown"})
             except Exception as exc:
                 _LOGGER.exception("Unhandled exception in async_step_ocean_thresholds: %s", exc)
+                # Surface the error: re-show with general error (flow will still log).
                 return self._show_ocean_thresholds_form(errors={"base": "unknown"})
 
         # When showing the form for the first time, use habitat preset defaults
