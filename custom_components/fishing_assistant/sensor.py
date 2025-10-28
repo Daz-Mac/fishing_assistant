@@ -1,13 +1,12 @@
 """Sensor platform for Fishing Assistant."""
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
-from homeassistant.const import UnitOfLength, UnitOfSpeed, PERCENTAGE
+from homeassistant.components.sensor import SensorEntity
 from homeassistant.util import dt as dt_util
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from datetime import datetime, timedelta, timezone, date, time
+from datetime import datetime, timezone, date, time
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from .const import (
     DOMAIN,
@@ -45,7 +44,13 @@ class OpenMeteoAdapter:
       - async get_current() -> dict with normalized current weather fields
     """
 
-    def __init__(self, client: OpenMeteoClient, latitude: float, longitude: float, include_marine: bool = False):
+    def __init__(
+        self,
+        client: OpenMeteoClient,
+        latitude: float,
+        longitude: float,
+        include_marine: bool = False,
+    ):
         self._client = client
         self._lat = latitude
         self._lon = longitude
@@ -236,7 +241,7 @@ class OpenMeteoAdapter:
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
-    async_add_entities
+    async_add_entities,
 ):
     """Set up fishing assistant sensors from a config entry."""
     data = config_entry.data
@@ -297,7 +302,7 @@ async def _setup_freshwater_sensors(hass, config_entry, async_add_entities):
                 weather_entity=weather_entity,
                 weather_fetcher=weather_fetcher,
                 species_loader=species_loader,
-                config_entry_id=config_entry.entry_id
+                config_entry_id=config_entry.entry_id,
             )
         )
 
@@ -325,7 +330,9 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
     if use_open_meteo:
         session = async_get_clientsession(hass)
         client = OpenMeteoClient(session=session)
-        open_meteo_adapter = OpenMeteoAdapter(client, lat, lon, include_marine=data.get(CONF_MARINE_ENABLED, True))
+        open_meteo_adapter = OpenMeteoAdapter(
+            client, lat, lon, include_marine=data.get(CONF_MARINE_ENABLED, True)
+        )
 
     location_key = f"{name.lower().replace(' ', '_')}"
 
@@ -361,16 +368,31 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
     async_add_entities(sensors)
 
 
-# ============================================================================
-# FRESHWATER SENSORS
-# ============================================================================
+# ============================================================================#
+# FRESHWATER SENSOR CLASS
+# ============================================================================#
 
 class FishScoreSensor(SensorEntity):
     """Sensor for freshwater fishing score."""
 
     should_poll = True
 
-    def __init__(self, hass, name, fish, lat, lon, body_type, timezone, elevation, period_type, weather_entity, weather_fetcher, species_loader, config_entry_id):
+    def __init__(
+        self,
+        hass,
+        name,
+        fish,
+        lat,
+        lon,
+        body_type,
+        timezone,
+        elevation,
+        period_type,
+        weather_entity,
+        weather_fetcher,
+        species_loader,
+        config_entry_id,
+    ):
         self.hass = hass
         self._last_update_hour: Optional[int] = None
         self._config_entry_id = config_entry_id
@@ -444,7 +466,7 @@ class FishScoreSensor(SensorEntity):
             "manufacturer": "Fishing Assistant",
             "model": "Fish Score Sensor",
             "entry_type": "service",
-            "via_device": None
+            "via_device": None,
         }
 
     async def async_update(self):
@@ -476,16 +498,20 @@ class FishScoreSensor(SensorEntity):
             )
 
             if not isinstance(result, dict):
-                _LOGGER.error("Scorer returned unexpected result type for %s: %s", self._name, type(result))
+                _LOGGER.error(
+                    "Scorer returned unexpected result type for %s: %s", self._name, type(result)
+                )
                 return
 
             self._state = result.get("score")
-            self._attrs.update({
-                "breakdown": result.get("breakdown", {}),
-                "component_scores": result.get("component_scores", {}),
-                "rating": result.get("rating"),
-                "last_updated": now.isoformat(),
-            })
+            self._attrs.update(
+                {
+                    "breakdown": result.get("breakdown", {}),
+                    "component_scores": result.get("component_scores", {}),
+                    "rating": result.get("rating"),
+                    "last_updated": now.isoformat(),
+                }
+            )
 
             forecast_raw = await self._weather_fetcher.get_forecast(days=7)
             if forecast_raw and isinstance(forecast_raw, dict):
@@ -552,7 +578,9 @@ class FishScoreSensor(SensorEntity):
                 if sunset_str:
                     astro["sunset"] = dt_util.parse_datetime(sunset_str)
             except Exception:
-                _LOGGER.debug("Failed to parse sun times: %s / %s", sunrise_str, sunset_str, exc_info=True)
+                _LOGGER.debug(
+                    "Failed to parse sun times: %s / %s", sunrise_str, sunset_str, exc_info=True
+                )
 
         if moon_state:
             phase_name = moon_state.state
@@ -571,9 +599,9 @@ class FishScoreSensor(SensorEntity):
         return astro
 
 
-# ============================================================================
-# OCEAN MODE SENSORS
-# ============================================================================
+# ============================================================================#
+# OCEAN MODE: Only the aggregated OceanFishingScoreSensor remains
+# ============================================================================#
 
 class OceanFishingScoreSensor(SensorEntity):
     """Main ocean fishing score sensor."""
@@ -602,7 +630,7 @@ class OceanFishingScoreSensor(SensorEntity):
             species=[species_id],
             species_profiles={},
             hass=hass,
-            config=data
+            config=data,
         )
 
         self._device_identifier = f"{name}_{lat}_{lon}_ocean"
@@ -672,7 +700,9 @@ class OceanFishingScoreSensor(SensorEntity):
         update_hours = [0, 6, 12, 18]
 
         if self._last_update_hour is not None and now.hour not in update_hours:
-            _LOGGER.debug("Skipping update for ocean sensor %s; not in update hours: %s", self._name, now.hour)
+            _LOGGER.debug(
+                "Skipping update for ocean sensor %s; not in update hours: %s", self._name, now.hour
+            )
             return
 
         if self._last_update_hour == now.hour:
@@ -700,7 +730,11 @@ class OceanFishingScoreSensor(SensorEntity):
             )
 
             if not isinstance(result, dict):
-                _LOGGER.error("Scorer returned unexpected result type for ocean sensor %s: %s", self._name, type(result))
+                _LOGGER.error(
+                    "Scorer returned unexpected result type for ocean sensor %s: %s",
+                    self._name,
+                    type(result),
+                )
                 return
 
             # Update numeric state
@@ -718,7 +752,9 @@ class OceanFishingScoreSensor(SensorEntity):
                 weather=weather_data_raw or {},
                 astro=astro_data or {},
                 mode="ocean",
-                species=[self._scorer.species_profile.get("id")] if getattr(self._scorer, "species_profile", None) else [self._attrs.get("species_focus")],
+                species=[self._scorer.species_profile.get("id")]
+                if getattr(self._scorer, "species_profile", None)
+                else [self._attrs.get("species_focus")],
                 location=self._attrs.get("location"),
                 forecast=forecast_raw or {},
                 marine=marine_data_raw or {},
@@ -737,7 +773,11 @@ class OceanFishingScoreSensor(SensorEntity):
             # Add a compact 'safety' summary (scorer.check_safety returns status + reasons)
             try:
                 weather_formatted = DataFormatter.format_weather_data(weather_data_raw)
-                marine_formatted = DataFormatter.format_marine_data(marine_data_raw) if marine_data_raw else {"current": {}, "forecast": {}}
+                marine_formatted = (
+                    DataFormatter.format_marine_data(marine_data_raw)
+                    if marine_data_raw
+                    else {"current": {}, "forecast": {}}
+                )
                 safety_status, safety_reasons = self._scorer.check_safety(weather_formatted, marine_formatted)
                 self._attrs["safety"] = {"status": safety_status, "reasons": safety_reasons}
             except Exception:
@@ -774,7 +814,12 @@ class OceanFishingScoreSensor(SensorEntity):
                 if sunset_str:
                     astro["sunset"] = dt_util.parse_datetime(sunset_str)
             except Exception:
-                _LOGGER.debug("Failed to parse sun times for ocean sensor: %s / %s", sunrise_str, sunset_str, exc_info=True)
+                _LOGGER.debug(
+                    "Failed to parse sun times for ocean sensor: %s / %s",
+                    sunrise_str,
+                    sunset_str,
+                    exc_info=True,
+                )
 
         if moon_state:
             phase_name = moon_state.state
@@ -798,465 +843,17 @@ class OceanFishingScoreSensor(SensorEntity):
             await self._scorer.async_initialize()
         except Exception:
             # Log but continue; scorer init should not block entity creation
-            _LOGGER.debug("Scorer async_initialize failed or not present for %s", self._name, exc_info=True)
+            _LOGGER.debug(
+                "Scorer async_initialize failed or not present for %s", self._name, exc_info=True
+            )
 
         # Update species_focus if the scorer loaded a profile
         try:
             if getattr(self._scorer, "species_profile", None):
-                self._attrs["species_focus"] = self._scorer.species_profile.get("name", self._attrs.get("species_focus"))
+                self._attrs["species_focus"] = self._scorer.species_profile.get(
+                    "name", self._attrs.get("species_focus")
+                )
         except Exception:
             _LOGGER.debug("Error reading species_profile for %s", self._name, exc_info=True)
 
-        await self.async_update()
-
-
-class TideStateSensor(SensorEntity):
-    """Sensor for tide state (rising/falling/slack)."""
-
-    should_poll = True
-
-    def __init__(self, hass, config_entry, tide_proxy, location_key):
-        """Initialize the tide state sensor."""
-        self.hass = hass
-        self._config_entry = config_entry
-        self._tide_proxy = tide_proxy
-
-        data = config_entry.data
-        name = data["name"]
-
-        self._device_identifier = f"{name}_{data['latitude']}_{data['longitude']}_ocean"
-        self._name = f"{location_key}_tide_state"
-        self._friendly_name = f"{name} Tide State"
-        self._state = None
-        self._attrs: Dict[str, Any] = {}
-
-    @property
-    def name(self):
-        return self._friendly_name
-
-    @property
-    def unique_id(self):
-        return self._name
-
-    @property
-    def icon(self):
-        if self._state == "rising":
-            return "mdi:arrow-up-bold"
-        elif self._state == "falling":
-            return "mdi:arrow-down-bold"
-        else:
-            return "mdi:minus"
-
-    @property
-    def native_value(self):
-        return self._state
-
-    @property
-    def extra_state_attributes(self):
-        return self._attrs
-
-    @property
-    def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._device_identifier)},
-            "name": self._config_entry.data["name"],
-            "manufacturer": "Fishing Assistant",
-            "model": "Ocean Fishing Score",
-        }
-
-    async def async_update(self):
-        """Update tide state."""
-        try:
-            tide_data_raw = await self._tide_proxy.get_tide_data()
-            if not tide_data_raw:
-                _LOGGER.warning("No tide data available for tide state sensor")
-                self._state = "unknown"
-                self._attrs = {}
-                return
-
-            tide_data = DataFormatter.format_tide_data(tide_data_raw) or {}
-
-            self._state = tide_data.get("state", "unknown")
-            self._attrs = {
-                "next_high": tide_data.get("next_high"),
-                "next_low": tide_data.get("next_low"),
-                "strength": tide_data.get("strength"),
-            }
-        except Exception as e:
-            _LOGGER.exception("Error updating tide state: %s", e)
-            self._state = "unknown"
-
-    async def async_added_to_hass(self):
-        await self.async_update()
-
-
-class TideStrengthSensor(SensorEntity):
-    """Sensor for tide strength (spring vs neap)."""
-
-    should_poll = True
-
-    def __init__(self, hass, config_entry, tide_proxy, location_key):
-        """Initialize the tide strength sensor."""
-        self.hass = hass
-        self._config_entry = config_entry
-        self._tide_proxy = tide_proxy
-
-        data = config_entry.data
-        name = data["name"]
-
-        self._device_identifier = f"{name}_{data['latitude']}_{data['longitude']}_ocean"
-        self._name = f"{location_key}_tide_strength"
-        self._friendly_name = f"{name} Tide Strength"
-        self._state = None
-
-    @property
-    def name(self):
-        return self._friendly_name
-
-    @property
-    def unique_id(self):
-        return self._name
-
-    @property
-    def icon(self):
-        return "mdi:gauge"
-
-    @property
-    def native_value(self):
-        return self._state
-
-    @property
-    def native_unit_of_measurement(self):
-        return PERCENTAGE
-
-    @property
-    def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._device_identifier)},
-            "name": self._config_entry.data["name"],
-            "manufacturer": "Fishing Assistant",
-            "model": "Ocean Fishing Score",
-        }
-
-    async def async_update(self):
-        """Update tide strength."""
-        try:
-            tide_data_raw = await self._tide_proxy.get_tide_data()
-            if not tide_data_raw:
-                _LOGGER.warning("No tide data available for tide strength sensor")
-                self._state = None
-                return
-
-            tide_data = DataFormatter.format_tide_data(tide_data_raw) or {}
-            self._state = tide_data.get("strength", 50)
-        except Exception as e:
-            _LOGGER.exception("Error updating tide strength: %s", e)
-            self._state = None
-
-    async def async_added_to_hass(self):
-        await self.async_update()
-
-
-class WaveHeightSensor(SensorEntity):
-    """Sensor for wave height."""
-
-    should_poll = True
-
-    def __init__(self, hass, config_entry, marine_fetcher, location_key):
-        """Initialize the wave height sensor."""
-        self.hass = hass
-        self._config_entry = config_entry
-        self._marine_fetcher = marine_fetcher
-
-        data = config_entry.data
-        name = data["name"]
-
-        self._device_identifier = f"{name}_{data['latitude']}_{data['longitude']}_ocean"
-        self._name = f"{location_key}_wave_height"
-        self._friendly_name = f"{name} Wave Height"
-        self._state = None
-        self._attrs: Dict[str, Any] = {}
-
-    @property
-    def name(self):
-        return self._friendly_name
-
-    @property
-    def unique_id(self):
-        return self._name
-
-    @property
-    def icon(self):
-        return "mdi:wave"
-
-    @property
-    def native_value(self):
-        return self._state
-
-    @property
-    def native_unit_of_measurement(self):
-        return UnitOfLength.METERS
-
-    @property
-    def device_class(self):
-        return SensorDeviceClass.DISTANCE
-
-    @property
-    def extra_state_attributes(self):
-        return self._attrs
-
-    @property
-    def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._device_identifier)},
-            "name": self._config_entry.data["name"],
-            "manufacturer": "Fishing Assistant",
-            "model": "Ocean Fishing Score",
-        }
-
-    async def async_update(self):
-        """Update wave height."""
-        try:
-            marine_data_raw = await self._marine_fetcher.get_marine_data()
-            if not marine_data_raw:
-                _LOGGER.warning("No marine data available for wave height sensor")
-                self._state = None
-                return
-
-            marine_data = DataFormatter.format_marine_data(marine_data_raw) or {"current": {}}
-            current = marine_data.get("current", {}) if isinstance(marine_data, dict) else {}
-            self._state = current.get("wave_height")
-            self._attrs = {
-                "wind_wave_height": current.get("wind_wave_height"),
-                "swell_wave_height": current.get("swell_wave_height"),
-                "wave_direction": current.get("wave_direction"),
-            }
-        except Exception as e:
-            _LOGGER.exception("Error updating wave height: %s", e)
-            self._state = None
-
-    async def async_added_to_hass(self):
-        await self.async_update()
-
-
-class WavePeriodSensor(SensorEntity):
-    """Sensor for wave period."""
-
-    should_poll = True
-
-    def __init__(self, hass, config_entry, marine_fetcher, location_key):
-        """Initialize the wave period sensor."""
-        self.hass = hass
-        self._config_entry = config_entry
-        self._marine_fetcher = marine_fetcher
-
-        data = config_entry.data
-        name = data["name"]
-
-        self._device_identifier = f"{name}_{data['latitude']}_{data['longitude']}_ocean"
-        self._name = f"{location_key}_wave_period"
-        self._friendly_name = f"{name} Wave Period"
-        self._state = None
-
-    @property
-    def name(self):
-        return self._friendly_name
-
-    @property
-    def unique_id(self):
-        return self._name
-
-    @property
-    def icon(self):
-        return "mdi:sine-wave"
-
-    @property
-    def native_value(self):
-        return self._state
-
-    @property
-    def native_unit_of_measurement(self):
-        return "s"
-
-    @property
-    def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._device_identifier)},
-            "name": self._config_entry.data["name"],
-            "manufacturer": "Fishing Assistant",
-            "model": "Ocean Fishing Score",
-        }
-
-    async def async_update(self):
-        """Update wave period."""
-        try:
-            marine_data_raw = await self._marine_fetcher.get_marine_data()
-            if not marine_data_raw:
-                _LOGGER.warning("No marine data available for wave period sensor")
-                self._state = None
-                return
-
-            marine_data = DataFormatter.format_marine_data(marine_data_raw) or {"current": {}}
-            current = marine_data.get("current", {}) if isinstance(marine_data, dict) else {}
-            self._state = current.get("wave_period")
-        except Exception as e:
-            _LOGGER.exception("Error updating wave period: %s", e)
-            self._state = None
-
-    async def async_added_to_hass(self):
-        await self.async_update()
-
-
-class WindSpeedSensor(SensorEntity):
-    """Sensor for wind speed."""
-
-    should_poll = True
-
-    def __init__(self, hass, config_entry, weather_fetcher, location_key):
-        """Initialize the wind speed sensor."""
-        self.hass = hass
-        self._config_entry = config_entry
-        self._weather_fetcher = weather_fetcher
-
-        data = config_entry.data
-        name = data["name"]
-
-        self._device_identifier = f"{name}_{data['latitude']}_{data['longitude']}_ocean"
-        self._name = f"{location_key}_wind_speed"
-        self._friendly_name = f"{name} Wind Speed"
-        self._state = None
-
-    @property
-    def name(self):
-        return self._friendly_name
-
-    @property
-    def unique_id(self):
-        return self._name
-
-    @property
-    def icon(self):
-        if self._state is None:
-            return "mdi:weather-windy"
-        try:
-            val = float(self._state)
-            if val < 10:
-                return "mdi:weather-windy"
-            if val < 20:
-                return "mdi:weather-windy-variant"
-            return "mdi:weather-hurricane"
-        except Exception:
-            return "mdi:weather-windy"
-
-    @property
-    def native_value(self):
-        return self._state
-
-    @property
-    def native_unit_of_measurement(self):
-        return UnitOfSpeed.KILOMETERS_PER_HOUR
-
-    @property
-    def device_class(self):
-        return SensorDeviceClass.WIND_SPEED
-
-    @property
-    def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._device_identifier)},
-            "name": self._config_entry.data["name"],
-            "manufacturer": "Fishing Assistant",
-            "model": "Ocean Fishing Score",
-        }
-
-    async def async_update(self):
-        """Update wind speed."""
-        try:
-            weather_data_raw = await self._weather_fetcher.get_weather_data()
-            if weather_data_raw:
-                weather_data = DataFormatter.format_weather_data(weather_data_raw)
-                self._state = weather_data.get("wind_speed")
-        except Exception as e:
-            _LOGGER.exception("Error updating wind speed: %s", e)
-            self._state = None
-
-    async def async_added_to_hass(self):
-        await self.async_update()
-
-
-class WindGustSensor(SensorEntity):
-    """Sensor for wind gust speed."""
-
-    should_poll = True
-
-    def __init__(self, hass, config_entry, weather_fetcher, location_key):
-        """Initialize the wind gust sensor."""
-        self.hass = hass
-        self._config_entry = config_entry
-        self._weather_fetcher = weather_fetcher
-
-        data = config_entry.data
-        name = data["name"]
-
-        self._device_identifier = f"{name}_{data['latitude']}_{data['longitude']}_ocean"
-        self._name = f"{location_key}_wind_gust"
-        self._friendly_name = f"{name} Wind Gust"
-        self._state = None
-
-    @property
-    def name(self):
-        return self._friendly_name
-
-    @property
-    def unique_id(self):
-        return self._name
-
-    @property
-    def icon(self):
-        if self._state is None:
-            return "mdi:weather-windy"
-        try:
-            val = float(self._state)
-            if val < 15:
-                return "mdi:weather-windy"
-            if val < 30:
-                return "mdi:weather-windy-variant"
-            return "mdi:weather-hurricane"
-        except Exception:
-            return "mdi:weather-windy"
-
-    @property
-    def native_value(self):
-        return self._state
-
-    @property
-    def native_unit_of_measurement(self):
-        return UnitOfSpeed.KILOMETERS_PER_HOUR
-
-    @property
-    def device_class(self):
-        return SensorDeviceClass.WIND_SPEED
-
-    @property
-    def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._device_identifier)},
-            "name": self._config_entry.data["name"],
-            "manufacturer": "Fishing Assistant",
-            "model": "Ocean Fishing Score",
-        }
-
-    async def async_update(self):
-        """Update wind gust speed."""
-        try:
-            weather_data_raw = await self._weather_fetcher.get_weather_data()
-            if weather_data_raw:
-                weather_data = DataFormatter.format_weather_data(weather_data_raw)
-                # prefer explicit gust, otherwise fallback to wind_speed
-                self._state = weather_data.get("wind_gust") or weather_data.get("wind_speed")
-        except Exception as e:
-            _LOGGER.exception("Error updating wind gust: %s", e)
-            self._state = None
-
-    async def async_added_to_hass(self):
         await self.async_update()
