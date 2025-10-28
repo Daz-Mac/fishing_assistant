@@ -13,7 +13,6 @@ from .const import (
     CONF_MODE,
     MODE_FRESHWATER,
     MODE_OCEAN,
-    CONF_WEATHER_ENTITY,
     CONF_MARINE_ENABLED,
     CONF_TIDE_MODE,
     TIDE_MODE_PROXY,
@@ -266,7 +265,6 @@ async def _setup_freshwater_sensors(hass, config_entry, async_add_entities):
     tz = data.get("timezone")
     elevation = data.get("elevation")
     period_type = data.get(CONF_TIME_PERIODS, PERIOD_FULL_DAY)
-    weather_entity = data.get(CONF_WEATHER_ENTITY)
 
     use_open_meteo = data.get(CONF_USE_OPEN_METEO, True)
     open_meteo_adapter = None
@@ -278,11 +276,11 @@ async def _setup_freshwater_sensors(hass, config_entry, async_add_entities):
     species_loader = SpeciesLoader(hass)
     await species_loader.async_load_profiles()
 
+    # WeatherFetcher no longer accepts a weather_entity parameter.
     weather_fetcher = WeatherFetcher(
         hass,
         lat,
         lon,
-        weather_entity=weather_entity,
         use_open_meteo=use_open_meteo,
         open_meteo_client=open_meteo_adapter,
     )
@@ -299,7 +297,6 @@ async def _setup_freshwater_sensors(hass, config_entry, async_add_entities):
                 timezone=tz,
                 elevation=elevation,
                 period_type=period_type,
-                weather_entity=weather_entity,
                 weather_fetcher=weather_fetcher,
                 species_loader=species_loader,
                 config_entry_id=config_entry.entry_id,
@@ -323,7 +320,6 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
     name = data["name"]
     lat = data["latitude"]
     lon = data["longitude"]
-    weather_entity = data.get(CONF_WEATHER_ENTITY)
 
     use_open_meteo = data.get(CONF_USE_OPEN_METEO, True)
     open_meteo_adapter = None
@@ -338,11 +334,11 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
 
     tide_proxy = None
     marine_fetcher = None
+    # WeatherFetcher no longer accepts a weather_entity parameter.
     weather_fetcher = WeatherFetcher(
         hass,
         lat,
         lon,
-        weather_entity=weather_entity,
         use_open_meteo=use_open_meteo,
         open_meteo_client=open_meteo_adapter,
     )
@@ -388,7 +384,6 @@ class FishScoreSensor(SensorEntity):
         timezone,
         elevation,
         period_type,
-        weather_entity,
         weather_fetcher,
         species_loader,
         config_entry_id,
@@ -423,7 +418,6 @@ class FishScoreSensor(SensorEntity):
             "timezone": timezone,
             "elevation": elevation,
             "period_type": period_type,
-            "weather_entity": weather_entity,
         }
 
     @property

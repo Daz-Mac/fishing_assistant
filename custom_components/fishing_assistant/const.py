@@ -8,7 +8,6 @@ CONF_USE_OPEN_METEO = "use_open_meteo"
 
 # Configuration keys for Ocean Mode
 CONF_MODE = "mode"
-CONF_WEATHER_ENTITY = "weather_entity"
 CONF_MARINE_ENABLED = "marine_enabled"
 CONF_TIDE_MODE = "tide_mode"
 CONF_TIDE_ENTITIES = "tide_entities"
