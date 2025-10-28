@@ -1,11 +1,10 @@
-"""Weather data fetcher - supports robust Home Assistant weather entity parsing and optional Open-Meteo client.
+"""Weather data fetcher - Open-Meteo only (no Home Assistant weather entity fallback).
 
-This hardened version:
-- Tries sensible candidate methods on an injected Open-Meteo client (including hourly fetch).
-- Handles client returns of dict, list (hourly entries), or objects with attributes.
-- Normalizes HA weather entity attributes defensively and respects explicit unit tags (converts when unit == "m/s").
-- Aggregates hourly lists into daily forecasts when needed.
-- Caches results and logs useful debug information without raising on parse failures.
+This version:
+- Uses the injected Open-Meteo client when use_open_meteo is True.
+- Does not attempt to read Home Assistant weather entities for current or forecast.
+- Normalizes client returns (dicts, lists, objects) and converts units where explicit.
+- Caches results and synthesizes forecasts from current if forecast is unavailable.
 """
 
 from __future__ import annotations
@@ -56,13 +55,12 @@ def _safe_int(v: Any, default: int) -> int:
 
 class WeatherFetcher:
     """
-    Fetch current weather and forecast, using Home Assistant entity or an injected Open-Meteo client.
+    Fetch current weather and forecast using an injected Open-Meteo client only.
 
     Parameters:
-    - hass: Home Assistant core instance (for reading states).
+    - hass: Home Assistant core instance (kept for compatibility, not used for weather lookups).
     - latitude/longitude: location (rounded to 4 decimals used in cache keys).
-    - weather_entity: optional HA weather entity id (string).
-    - use_open_meteo: if True and an open_meteo_client is provided, the fetcher will try it first.
+    - use_open_meteo: if True and an open_meteo_client is provided, the fetcher will use it.
     - open_meteo_client: optional client object. The fetcher will attempt several common method names.
     """
 
@@ -71,25 +69,23 @@ class WeatherFetcher:
         hass,
         latitude: float,
         longitude: float,
-        weather_entity: Optional[str] = None,
-        use_open_meteo: bool = False,
+        use_open_meteo: bool = True,
         open_meteo_client: Optional[Any] = None,
     ) -> None:
         self.hass = hass
         self.latitude = round(latitude, 4)
         self.longitude = round(longitude, 4)
-        self.weather_entity = weather_entity
+        # weather_entity removed intentionally
         self.use_open_meteo = use_open_meteo
         self.open_meteo_client = open_meteo_client
-        ent = str(weather_entity) if weather_entity is not None else "None"
-        self._cache_key = f"{self.latitude}_{self.longitude}_{ent}_{'om' if use_open_meteo else 'ha'}"
+        self._cache_key = f"{self.latitude}_{self.longitude}_{'om' if use_open_meteo else 'none'}"
         self._cache_duration = timedelta(minutes=30)
 
     # -----------------------
     # Public: current weather
     # -----------------------
     async def get_weather_data(self) -> Dict[str, Any]:
-        """Get current weather data (normalized). Uses cache -> Open-Meteo -> HA -> defaults."""
+        """Get current weather data (normalized). Uses cache -> Open-Meteo -> defaults."""
         now = dt_util.now()
 
         # Use cached if present and fresh
@@ -100,7 +96,7 @@ class WeatherFetcher:
                 _LOGGER.debug("Using cached weather data for %s", self._cache_key)
                 return cache_entry["data"]
 
-        # Try Open-Meteo client for current if requested
+        # Only use Open-Meteo client (no HA weather entity fallback)
         if self.use_open_meteo and self.open_meteo_client:
             try:
                 result = await self._call_open_meteo_current()
@@ -111,21 +107,8 @@ class WeatherFetcher:
             except Exception as exc:
                 _LOGGER.debug("Open-Meteo client current fetch failed: %s", exc, exc_info=True)
 
-        # Try HA weather entity
-        if self.weather_entity:
-            try:
-                weather_data = await self._get_from_ha_entity()
-                if weather_data:
-                    _GLOBAL_CACHE[self._cache_key] = {"data": weather_data, "time": now}
-                    _LOGGER.info("Fetched weather from HA entity: %s", self.weather_entity)
-                    return weather_data
-            except Exception as exc:
-                _LOGGER.debug("HA weather entity fetch failed: %s", exc, exc_info=True)
-
         # Fallback to defaults
-        _LOGGER.warning(
-            "Unable to fetch weather data from entity '%s' or Open-Meteo; using defaults", self.weather_entity
-        )
+        _LOGGER.warning("Unable to fetch weather data from Open-Meteo; using defaults")
         fallback = self._get_fallback_data()
         _GLOBAL_CACHE[self._cache_key] = {"data": fallback, "time": now}
         return fallback
@@ -136,7 +119,7 @@ class WeatherFetcher:
 
         Candidate behavior:
         - If client exposes a dedicated current method, call it.
-        - If client exposes a hourly fetch (list of hourly dicts), pick the entry closest to now.
+        - If client returns hourly list, pick the entry closest to now.
         - Normalize known keys into the expected shape.
         """
         client = self.open_meteo_client
@@ -179,7 +162,6 @@ class WeatherFetcher:
 
             # If result is a list of hourly entries -> pick nearest hour entry
             if isinstance(result, list):
-                # Expect hourly dicts with "time"
                 now = dt_util.now()
                 best = None
                 best_delta = None
@@ -202,20 +184,16 @@ class WeatherFetcher:
                 if best:
                     mapped = self._map_to_current_shape(best)
                     return mapped
-                # no usable hourly entries
                 return None
 
             # If result is a dict, try to map to expected shape
             if isinstance(result, dict):
-                # There are clients that return {"hourly": {...}} or full API response - try to handle
                 if "hourly" in result and isinstance(result.get("hourly"), dict):
-                    # Attempt to pick the first hour from hourly (Open-Meteo style)
                     hourly = result.get("hourly")
                     times = hourly.get("time") or []
                     if isinstance(times, list) and len(times) > 0:
                         idx = 0
                         try:
-                            # prefer the current hour if present (match now)
                             now = dt_util.now()
                             for i, t_raw in enumerate(times):
                                 t = dt_util.parse_datetime(str(t_raw)) if t_raw is not None else None
@@ -226,7 +204,6 @@ class WeatherFetcher:
                                     break
                         except Exception:
                             idx = 0
-                        # Build a single-item dict from arrays at idx
                         candidate = {}
                         for k, arr in hourly.items():
                             if isinstance(arr, list) and len(arr) > idx:
@@ -235,7 +212,6 @@ class WeatherFetcher:
                                 candidate[k] = None
                         mapped = self._map_to_current_shape(candidate)
                         return mapped
-                # Otherwise treat dict as a single snapshot
                 mapped = self._map_to_current_shape(result)
                 return mapped
 
@@ -315,100 +291,12 @@ class WeatherFetcher:
         }
 
     # -----------------------
-    # Home Assistant entity
-    # -----------------------
-    async def _get_from_ha_entity(self) -> Optional[Dict[str, Any]]:
-        """Get weather data from Home Assistant weather entity. Returns None on error."""
-        try:
-            state = self.hass.states.get(self.weather_entity)
-            if not state:
-                _LOGGER.error("Weather entity '%s' not found", self.weather_entity)
-                return None
-
-            attrs = state.attributes or {}
-
-            # Try multiple attribute keys
-            temperature = attrs.get("temperature") or attrs.get("temp") or attrs.get("temperature_current")
-            # Some entities put numeric current in state.state
-            if temperature is None:
-                try:
-                    # state.state is a string; try parsing float
-                    temperature = float(state.state)
-                except Exception:
-                    temperature = None
-
-            wind_speed = attrs.get("wind_speed") or attrs.get("wind")
-            wind_gust = attrs.get("wind_gust_speed") or attrs.get("wind_gust") or wind_speed
-            pressure = attrs.get("pressure") or attrs.get("air_pressure")
-            cloud_cover = attrs.get("cloud_coverage") or attrs.get("cloud_cover") or attrs.get("clouds")
-            precip_prob = 0
-
-            # If forecast attr exists and includes probabilities, use first entry's precip
-            try:
-                forecast_list = attrs.get("forecast", []) or attrs.get("forecasts", [])
-                if isinstance(forecast_list, list) and len(forecast_list) > 0 and isinstance(forecast_list[0], dict):
-                    first = forecast_list[0]
-                    precip_prob = first.get("precipitation_probability") or first.get("precipitation") or first.get("pop") or 0
-            except Exception:
-                precip_prob = 0
-
-            # Fallback estimate for cloud from humidity if missing
-            if cloud_cover is None:
-                humidity = attrs.get("humidity")
-                if humidity is not None:
-                    try:
-                        cloud_cover = min(100, float(humidity) * 1.2)
-                    except Exception:
-                        cloud_cover = DEFAULT_WEATHER_VALUES["cloud_cover"]
-                else:
-                    cloud_cover = DEFAULT_WEATHER_VALUES["cloud_cover"]
-
-            # Unit conversion for wind if explicit
-            wind_unit = attrs.get("wind_speed_unit") or attrs.get("wind_unit")
-            try:
-                wind_val = _safe_float(wind_speed, DEFAULT_WEATHER_VALUES["wind_speed"])
-                gust_val = _safe_float(wind_gust, DEFAULT_WEATHER_VALUES["wind_gust"])
-                if wind_unit and str(wind_unit).strip().lower() == "m/s":
-                    wind_val = wind_val * 3.6
-                    gust_val = gust_val * 3.6
-                else:
-                    # If unit absent, assume values are already km/h (do not attempt heuristic conversions)
-                    pass
-            except Exception:
-                wind_val = DEFAULT_WEATHER_VALUES["wind_speed"]
-                gust_val = DEFAULT_WEATHER_VALUES["wind_gust"]
-
-            weather_data: Dict[str, Any] = {
-                "temperature": _safe_float(temperature, DEFAULT_WEATHER_VALUES["temperature"]),
-                "wind_speed": wind_val,
-                "wind_gust": gust_val,
-                "cloud_cover": _safe_int(cloud_cover, DEFAULT_WEATHER_VALUES["cloud_cover"]),
-                "precipitation_probability": _safe_int(precip_prob, DEFAULT_WEATHER_VALUES["precipitation_probability"]),
-                "pressure": _safe_float(pressure, DEFAULT_WEATHER_VALUES["pressure"]),
-            }
-
-            _LOGGER.debug(
-                "Parsed HA weather entity '%s': temp=%s°C, wind=%s km/h, gust=%s km/h, clouds=%s%%",
-                self.weather_entity,
-                weather_data["temperature"],
-                weather_data["wind_speed"],
-                weather_data["wind_gust"],
-                weather_data["cloud_cover"],
-            )
-
-            return weather_data
-        except Exception as exc:
-            _LOGGER.error("Error reading weather entity '%s': %s", self.weather_entity, exc, exc_info=True)
-            return None
-
-    # -----------------------
     # Public: forecast
     # -----------------------
     async def get_forecast(self, days: int = 7) -> Dict[str, Dict[str, Any]]:
         """
         Get weather forecast (date-keyed dict). Priority:
         - Open-Meteo client (if enabled)
-        - HA entity attribute 'forecast'
         - Synthesize from current conditions
         """
         now = dt_util.now()
@@ -421,7 +309,7 @@ class WeatherFetcher:
                 _LOGGER.debug("Using cached forecast data for %s", forecast_cache_key)
                 return cache_entry["data"]
 
-        # Try Open-Meteo
+        # Only use Open-Meteo client (no HA forecast fallback)
         if self.use_open_meteo and self.open_meteo_client:
             try:
                 result = await self._call_open_meteo_forecast(days)
@@ -432,23 +320,8 @@ class WeatherFetcher:
             except Exception as exc:
                 _LOGGER.debug("Open-Meteo client forecast fetch failed: %s", exc, exc_info=True)
 
-        # Try HA entity forecast
-        if self.weather_entity:
-            try:
-                forecast_data = await self._get_forecast_from_ha_entity(days)
-                if forecast_data:
-                    _GLOBAL_CACHE[forecast_cache_key] = {"data": forecast_data, "time": now}
-                    _LOGGER.info("Fetched forecast from HA entity: %s", self.weather_entity)
-                    return forecast_data
-            except Exception as exc:
-                _LOGGER.debug("HA forecast fetch failed: %s", exc, exc_info=True)
-
-        # Synthesize from current
-        _LOGGER.warning(
-            "Unable to fetch forecast from entity '%s' or Open-Meteo; synthesizing %s-day forecast from current.",
-            self.weather_entity,
-            days,
-        )
+        # Synthesize from current if forecast unavailable
+        _LOGGER.warning("Unable to fetch forecast from Open-Meteo; synthesizing %s-day forecast from current.", days)
         current = await self.get_weather_data()
         synthesized: Dict[str, Dict[str, Any]] = {}
         today = dt_util.now().date()
@@ -513,7 +386,6 @@ class WeatherFetcher:
             if isinstance(result, dict):
                 # If it's an Open-Meteo full response (contains 'hourly'), handle specially
                 if "hourly" in result and isinstance(result.get("hourly"), dict):
-                    # convert hourly arrays -> list of hourly dicts then aggregate daily
                     hourly = result.get("hourly")
                     times = hourly.get("time") or []
                     items: List[Dict[str, Any]] = []
@@ -529,16 +401,13 @@ class WeatherFetcher:
                         items.append(row)
                     return self._normalize_hourly_list_to_daily(items, days)
                 # If dict keyed by dates -> normalize entries
-                # Accept both date-keyed (YYYY-MM-DD) or iso keys with time - trim to date
                 normalized: Dict[str, Dict[str, Any]] = {}
                 for key, val in sorted(result.items()):
                     date_key = str(key).split("T")[0]
                     if isinstance(val, dict):
-                        # pick numeric fields defensively
                         temp = _safe_float(val.get("temperature") or val.get("temp") or val.get("temperature_2m"), DEFAULT_WEATHER_VALUES["temperature"])
                         wind = _safe_float(val.get("wind_speed") or val.get("wind") or val.get("wind_speed_10m"), DEFAULT_WEATHER_VALUES["wind_speed"])
                         gust = _safe_float(val.get("wind_gust") or val.get("gust") or wind, DEFAULT_WEATHER_VALUES["wind_gust"])
-                        # FIX: pass default as second argument to _safe_int
                         cloud = _safe_int(val.get("cloud_cover") or val.get("clouds"), DEFAULT_WEATHER_VALUES["cloud_cover"])
                         pop = _safe_int(val.get("precipitation_probability") or val.get("pop") or val.get("precipitation"), DEFAULT_WEATHER_VALUES["precipitation_probability"])
                         pressure = _safe_float(val.get("pressure") or val.get("pressure_msl"), DEFAULT_WEATHER_VALUES["pressure"])
@@ -551,28 +420,21 @@ class WeatherFetcher:
                             "pressure": pressure,
                         }
                 if normalized:
-                    # Trim to requested days
                     limited = dict(list(normalized.items())[:days])
                     return limited or None
 
             # If a list -> normalize entries (could be hourly or daily)
             if isinstance(result, list):
-                # If items look like hourly (have 'time' with T) aggregate to daily
-                # If items look daily (already grouped by date), try the list normalizer
-                # Heuristic: if first item contains 'time' treat as hourly
                 first = next((it for it in result if isinstance(it, dict)), None)
                 if first:
                     if "time" in first or "datetime" in first or "timestamp" in first:
-                        # treat list as hourly/detailed entries
                         return self._normalize_hourly_list_to_daily(result, days)
-                    # else, treat as list of daily entries
                     return self._normalize_forecast_list(result, days)
 
             # If object with 'daily' attribute
             if hasattr(result, "daily"):
                 daily = getattr(result, "daily")
                 if isinstance(daily, dict):
-                    # convert similar to dict case
                     return await asyncio.get_event_loop().run_in_executor(None, lambda: self._call_sync_normalize_dict(daily, days))
                 if isinstance(daily, list):
                     return self._normalize_hourly_list_to_daily(daily, days)
@@ -748,66 +610,9 @@ class WeatherFetcher:
                 }
         return final
 
-    async def _get_forecast_from_ha_entity(self, days: int) -> Dict[str, Dict[str, Any]]:
-        """Parse a forecast attribute from HA weather entity into a simple daily dict."""
-        try:
-            state = self.hass.states.get(self.weather_entity)
-            if not state:
-                _LOGGER.error("Weather entity '%s' not found", self.weather_entity)
-                return {}
-
-            attrs = state.attributes or {}
-            forecast_attr = attrs.get("forecast") or attrs.get("forecasts") or []
-
-            # If dict keyed by dates
-            if isinstance(forecast_attr, dict):
-                return self._normalize_forecast_dict_from_ha(forecast_attr, days)
-
-            # If list, try to parse
-            if isinstance(forecast_attr, list) and len(forecast_attr) > 0:
-                # If items contain 'time' treat as hourly/detailed -> aggregate
-                first = next((it for it in forecast_attr if isinstance(it, dict)), None)
-                if first and ("time" in first or "datetime" in first or "timestamp" in first):
-                    normalized = self._normalize_hourly_list_to_daily(forecast_attr, days)
-                    if normalized:
-                        return normalized
-                # Otherwise treat list as daily entries
-                normalized = self._normalize_forecast_list(forecast_attr, days)
-                if normalized:
-                    return normalized
-
-            return {}
-        except Exception as exc:
-            _LOGGER.error("Error parsing forecast from entity '%s': %s", self.weather_entity, exc, exc_info=True)
-            return {}
-
-    def _normalize_forecast_dict_from_ha(self, d: Dict[str, Any], days: int) -> Dict[str, Dict[str, Any]]:
-        """Normalize HA forecast dict keyed by date-like keys."""
-        out: Dict[str, Dict[str, Any]] = {}
-        for key in sorted(d.keys())[:days]:
-            entry = d.get(key) or {}
-            if not isinstance(entry, dict):
-                continue
-            temp = _safe_float(entry.get("temperature") or entry.get("temp"), DEFAULT_WEATHER_VALUES["temperature"])
-            wind = _safe_float(entry.get("wind_speed") or entry.get("wind"), DEFAULT_WEATHER_VALUES["wind_speed"])
-            gust = _safe_float(entry.get("wind_gust") or entry.get("gust") or wind, DEFAULT_WEATHER_VALUES["wind_gust"])
-            cloud = _safe_int(entry.get("cloud_cover") or entry.get("clouds"), DEFAULT_WEATHER_VALUES["cloud_cover"])
-            pop = _safe_int(entry.get("precipitation_probability") or entry.get("pop") or entry.get("precipitation"), DEFAULT_WEATHER_VALUES["precipitation_probability"])
-            pressure = _safe_float(entry.get("pressure") or entry.get("pressure_msl"), DEFAULT_WEATHER_VALUES["pressure"])
-            date_key = str(key).split("T")[0]
-            out[date_key] = {
-                "temperature": temp,
-                "wind_speed": wind,
-                "wind_gust": gust,
-                "cloud_cover": cloud,
-                "precipitation_probability": pop,
-                "pressure": pressure,
-            }
-        return out
-
     # -----------------------
     # Fallbacks
     # -----------------------
     def _get_fallback_data(self) -> Dict[str, Any]:
-        """Return fallback weather data when entity + client unavailable."""
+        """Return fallback weather data when client unavailable."""
         return DEFAULT_WEATHER_VALUES.copy()

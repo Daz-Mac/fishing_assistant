@@ -27,14 +27,12 @@ from .const import (
     CONF_SPECIES_FOCUS,
     CONF_SPECIES_ID,
     CONF_SPECIES_REGION,
-    CONF_WEATHER_ENTITY,
     CONF_TIDE_MODE,
     CONF_TIDE_SENSOR,
     CONF_MARINE_ENABLED,
     CONF_AUTO_APPLY_THRESHOLDS,
     CONF_THRESHOLDS,
     CONF_TIME_PERIODS,
-    CONF_USE_OPEN_METEO,
     TIDE_MODE_PROXY,
     TIDE_MODE_SENSOR,
     HABITAT_PRESETS,
@@ -197,7 +195,8 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Configure time period monitoring preference for freshwater."""
         if user_input is not None:
             self.freshwater_config.update(user_input)
-            return await self.async_step_freshwater_weather()
+            # Open-Meteo only — skip weather step
+            return await self.async_step_freshwater_thresholds()
 
         return self.async_show_form(
             step_id="freshwater_time_periods",
@@ -223,74 +222,6 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             description_placeholders={
                 "info": "Choose which time periods to monitor. Dawn & Dusk focuses on the most productive fishing times."
             },
-        )
-
-    async def async_step_freshwater_weather(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        """Configure weather integration for freshwater (REQUIRED unless Open-Meteo chosen)."""
-        if user_input is not None:
-            use_open = bool(user_input.get(CONF_USE_OPEN_METEO, True))
-            self.freshwater_config[CONF_USE_OPEN_METEO] = use_open
-
-            # If user chose not to use Open-Meteo, require a weather entity
-            if not use_open:
-                if not user_input.get(CONF_WEATHER_ENTITY):
-                    errors = {"base": "no_weather_entity"}
-                    return self.async_show_form(
-                        step_id="freshwater_weather",
-                        data_schema=self._get_freshwater_weather_schema(user_input),
-                        errors=errors,
-                    )
-                self.freshwater_config[CONF_WEATHER_ENTITY] = user_input[CONF_WEATHER_ENTITY]
-            else:
-                # If using Open-Meteo, weather entity is optional; only store if provided
-                if user_input.get(CONF_WEATHER_ENTITY):
-                    self.freshwater_config[CONF_WEATHER_ENTITY] = user_input[CONF_WEATHER_ENTITY]
-
-            return await self.async_step_freshwater_thresholds()
-
-        return self.async_show_form(
-            step_id="freshwater_weather",
-            data_schema=self._get_freshwater_weather_schema(),
-            description_placeholders={
-                "info": "Select an optional Home Assistant weather entity to provide weather data for fishing conditions or enable Open‑Meteo."
-            },
-        )
-
-    def _get_freshwater_weather_schema(self, user_input: dict[str, Any] | None = None):
-        """Schema builder for freshwater weather step (separate to allow re-use on errors)."""
-        default_use_open = True
-        default_weather = ""
-        if user_input:
-            default_use_open = user_input.get(CONF_USE_OPEN_METEO, default_use_open)
-            default_weather = user_input.get(CONF_WEATHER_ENTITY, default_weather)
-
-        # Build weather entity options list with labels
-        weather_states = self.hass.states.async_all("weather")
-        weather_options: list[dict[str, str]] = []
-        for s in weather_states:
-            entity_id = s.entity_id
-            friendly = s.attributes.get("friendly_name") or entity_id
-            # Provide both friendly name and entity id in the label for clarity
-            weather_options.append({"value": entity_id, "label": f"{friendly} ({entity_id})"})
-
-        # If Open-Meteo is the default/selected, allow an explicit empty option so the selector validates
-        if default_use_open:
-            weather_options.insert(0, {"value": "", "label": "Use Open‑Meteo / None"})
-
-        # Ensure default_weather is valid for the selector options; otherwise choose empty if open mete0 is used
-        option_values = {opt["value"] for opt in weather_options}
-        if default_weather not in option_values:
-            default_weather = "" if default_use_open else (weather_states[0].entity_id if weather_states else "")
-
-        return vol.Schema(
-            {
-                vol.Required(CONF_USE_OPEN_METEO, default=default_use_open): selector.BooleanSelector(
-                    selector.BooleanSelectorConfig()
-                ),
-                vol.Optional(CONF_WEATHER_ENTITY, default=default_weather): selector.SelectSelector(
-                    selector.SelectSelectorConfig(options=weather_options, mode="dropdown")
-                ),
-            }
         )
 
     async def async_step_freshwater_thresholds(self, user_input: dict[str, Any] | None = None) -> FlowResult:
@@ -340,10 +271,6 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self.freshwater_config[CONF_ELEVATION] = self.hass.config.elevation
         self.freshwater_config[CONF_MODE] = MODE_FRESHWATER
 
-        # Ensure use_open_meteo defaults to True if not present (defensive)
-        if CONF_USE_OPEN_METEO not in self.freshwater_config:
-            self.freshwater_config[CONF_USE_OPEN_METEO] = True
-
         return self.async_create_entry(title=self.freshwater_config.get(CONF_NAME, DEFAULT_NAME), data=self.freshwater_config)
 
     async def _async_step_freshwater(self, user_input: dict[str, Any]) -> FlowResult:
@@ -370,16 +297,6 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # Add default time period if not present
         if CONF_TIME_PERIODS not in user_input:
             user_input[CONF_TIME_PERIODS] = TIME_PERIODS_FULL_DAY
-
-        # Default use_open_meteo to True if not present
-        if CONF_USE_OPEN_METEO not in user_input:
-            user_input[CONF_USE_OPEN_METEO] = True
-
-        # Check if weather entity exists when Open-Meteo not chosen - if not, abort
-        if not user_input.get(CONF_USE_OPEN_METEO, True) and CONF_WEATHER_ENTITY not in user_input:
-            _LOGGER.error("Legacy config missing weather entity and Open-Meteo disabled")
-            errors["base"] = "no_weather_entity"
-            return self.async_show_form(step_id="freshwater", data_schema=self._get_freshwater_schema(user_input), errors=errors)
 
         return self.async_create_entry(title=user_input.get(CONF_NAME, DEFAULT_NAME), data=user_input)
 
@@ -593,7 +510,8 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 # Store safe value
                 self.ocean_config[CONF_HABITAT_PRESET] = habitat_preset
 
-                return await self.async_step_ocean_weather()
+                # Skip weather step — Open-Meteo only
+                return await self.async_step_ocean_time_periods()
             except Exception as exc:
                 _LOGGER.exception("Unhandled exception in async_step_ocean_habitat: %s", exc)
                 # Re-show the form with a general error so the user can retry
@@ -634,74 +552,6 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     ),
                 }
             ),
-        )
-
-    async def async_step_ocean_weather(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        """Configure weather integration (REQUIRED unless Open-Meteo chosen)."""
-        if user_input is not None:
-            use_open = bool(user_input.get(CONF_USE_OPEN_METEO, True))
-            self.ocean_config[CONF_USE_OPEN_METEO] = use_open
-
-            # If user chose not to use Open-Meteo, require a weather entity
-            if not use_open:
-                if not user_input.get(CONF_WEATHER_ENTITY):
-                    errors = {"base": "no_weather_entity"}
-                    return self.async_show_form(step_id="ocean_weather", data_schema=self._get_ocean_weather_schema(user_input), errors=errors)
-                self.ocean_config[CONF_WEATHER_ENTITY] = user_input[CONF_WEATHER_ENTITY]
-            else:
-                if user_input.get(CONF_WEATHER_ENTITY):
-                    self.ocean_config[CONF_WEATHER_ENTITY] = user_input[CONF_WEATHER_ENTITY]
-
-            # Set defaults for tide and marine data if not set elsewhere
-            self.ocean_config[CONF_TIDE_MODE] = self.ocean_config.get(CONF_TIDE_MODE, TIDE_MODE_PROXY)
-            self.ocean_config[CONF_MARINE_ENABLED] = self.ocean_config.get(CONF_MARINE_ENABLED, True)
-
-            return await self.async_step_ocean_time_periods()
-
-        return self.async_show_form(
-            step_id="ocean_weather",
-            data_schema=self._get_ocean_weather_schema(),
-            description_placeholders={
-                "info": "Select a Home Assistant weather entity or enable Open‑Meteo marine API. If Open‑Meteo is enabled, a weather entity is optional."
-            },
-        )
-
-    def _get_ocean_weather_schema(self, user_input: dict[str, Any] | None = None):
-        """Schema builder for ocean weather step (used for re-showing after validation errors)."""
-        default_use_open = True
-        default_weather = ""
-        if user_input:
-            default_use_open = user_input.get(CONF_USE_OPEN_METEO, default_use_open)
-            default_weather = user_input.get(CONF_WEATHER_ENTITY, default_weather)
-
-        # Build weather entity options from current HA states (include friendly labels)
-        weather_states = self.hass.states.async_all("weather")
-        weather_options: list[dict[str, str]] = []
-        for s in weather_states:
-            entity_id = s.entity_id
-            friendly = s.attributes.get("friendly_name") or entity_id
-            weather_options.append({"value": entity_id, "label": f"{friendly} ({entity_id})"})
-
-        # If Open‑Meteo is enabled (or default is enabled) add an explicit "none" option
-        # so the selector can be empty and still validate.
-        if default_use_open:
-            weather_options.insert(0, {"value": "", "label": "Use Open‑Meteo / None"})
-
-        # Ensure the default is valid for the selector. If it's not present, use an empty value
-        # (allowed when Open‑Meteo is on). This prevents voluptuous complaining the default isn't in options.
-        option_values = {opt["value"] for opt in weather_options}
-        if default_weather not in option_values:
-            default_weather = "" if default_use_open else (weather_states[0].entity_id if weather_states else "")
-
-        return vol.Schema(
-            {
-                vol.Required(CONF_USE_OPEN_METEO, default=default_use_open): selector.BooleanSelector(
-                    selector.BooleanSelectorConfig()
-                ),
-                vol.Optional(CONF_WEATHER_ENTITY, default=default_weather): selector.SelectSelector(
-                    selector.SelectSelectorConfig(options=weather_options, mode="dropdown")
-                ),
-            }
         )
 
     async def async_step_ocean_time_periods(self, user_input: dict[str, Any] | None = None) -> FlowResult:
@@ -831,8 +681,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_AUTO_APPLY_THRESHOLDS: False,  # Always show thresholds
                     CONF_TIDE_MODE: TIDE_MODE_PROXY,  # Always use proxy
                     CONF_MARINE_ENABLED: True,  # Always enabled
-                    CONF_WEATHER_ENTITY: self.ocean_config.get(CONF_WEATHER_ENTITY),
-                    CONF_USE_OPEN_METEO: self.ocean_config.get(CONF_USE_OPEN_METEO, True),
+                    # No HA weather entity; Open-Meteo only
                     CONF_THRESHOLDS: {
                         "max_wind_speed": user_input["max_wind_speed"],
                         "max_gust_speed": user_input["max_gust_speed"],
@@ -960,9 +809,6 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                             mode="dropdown",
                         )
                     ),
-                    vol.Required(CONF_USE_OPEN_METEO, default=self.config_entry.data.get(CONF_USE_OPEN_METEO, True)): selector.BooleanSelector(
-                        selector.BooleanSelectorConfig()
-                    ),
                 }
             ),
         )
@@ -992,9 +838,6 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     ),
                     vol.Required("max_wave_height", default=thresholds.get("max_wave_height", 2.0)): selector.NumberSelector(
                         selector.NumberSelectorConfig(min=0.5, max=5.0, step=0.5, unit_of_measurement="m", mode="slider")
-                    ),
-                    vol.Required(CONF_USE_OPEN_METEO, default=self.config_entry.data.get(CONF_USE_OPEN_METEO, True)): selector.BooleanSelector(
-                        selector.BooleanSelectorConfig()
                     ),
                 }
             ),
