@@ -135,58 +135,76 @@ class TideProxy:
             return fallback
 
     async def _get_moon_data(self) -> Dict[str, Optional[float]]:
-        """Extract moon phase (0..1) and approximate altitude from Home Assistant sensors.
+        """Compute moon phase (0..1) and current altitude using internal astronomy code.
 
-        Tries multiple common sensor shapes:
-          - sensor.moon with numeric state (0..1) or name
-          - attribute 'moon_phase' numeric on various sensors
-        Returns a dict: {"phase": float|None, "altitude": float|None}
+        This method no longer reads any Home Assistant moon sensor entities. It uses
+        the integration's own astronomy calculator (helpers.astro) to compute a
+        per-day moon phase and attempts to compute the instantaneous moon altitude
+        via Skyfield (ephemeris). If altitude calculation fails, altitude is left
+        as None (no heuristic fallbacks).
+        Returns: {"phase": float|None, "altitude": float|None}
         """
         try:
-            # Try direct moon entity
-            moon_state = self.hass.states.get("sensor.moon") or self.hass.states.get("moon.moon")
+            # Prefer the integration's own astronomy forecast to obtain a per-day moon_phase
+            from .helpers.astro import calculate_astronomy_forecast
+
+            try:
+                astro_forecast = await calculate_astronomy_forecast(self.hass, self.latitude, self.longitude, days=2)
+            except Exception:
+                astro_forecast = {}
+
+            today_iso = dt_util.as_local(dt_util.now()).date().isoformat()
             phase_val: Optional[float] = None
             altitude: Optional[float] = None
 
-            if moon_state:
-                # Prefer numeric attribute
-                attr_phase = moon_state.attributes.get("moon_phase") if hasattr(moon_state, "attributes") else None
-                if attr_phase is not None:
-                    phase_val = self._coerce_phase(attr_phase)
-                else:
-                    # Try numeric state
-                    try:
-                        phase_val = self._coerce_phase(moon_state.state)
-                    except Exception:
-                        phase_val = None
+            if isinstance(astro_forecast, dict):
+                today_entry = astro_forecast.get(today_iso) or {}
+                if isinstance(today_entry, dict):
+                    phase_val = today_entry.get("moon_phase")
 
-                # Some moon sensors provide 'altitude' or 'elevation'
-                alt = moon_state.attributes.get("altitude") or moon_state.attributes.get("elevation")
-                if alt is not None:
+            # Attempt to compute instantaneous moon altitude using Skyfield (optional import)
+            try:
+                # Local import to avoid hard dependency at module import time
+                from skyfield.api import load, wgs84  # type: ignore
+                import os
+
+                # Reuse same ephemeris path as helpers.astro (data/de421.bsp)
+                data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+                eph_path = os.path.join(data_dir, "de421.bsp")
+
+                def _load_eph():
+                    return load(eph_path)
+
+                # Load ephemeris in executor to avoid blocking the event loop
+                eph = await self.hass.async_add_executor_job(_load_eph)
+                ts = load.timescale()
+
+                now = dt_util.now()
+                # Build skyfield Time from current UTC components
+                t = ts.utc(now.year, now.month, now.day, now.hour, now.minute, now.second)
+
+                earth = eph["earth"]
+                moon = eph["moon"]
+                location = wgs84.latlon(self.latitude, self.longitude)
+
+                # Compute apparent position of the moon from the location (altitude)
+                astrom = earth.at(t).observe(moon).apparent()
+                alt, az, distance = astrom.altaz()
+                try:
+                    altitude = float(getattr(alt, "degrees", None))
+                except Exception:
+                    # alt may be an Angle-like object; attempt conversion
                     try:
-                        altitude = float(alt)
+                        altitude = float(alt.degrees)
                     except Exception:
                         altitude = None
-
-            # If still None, attempt to read sensor.moon_phase or generic attributes
-            if phase_val is None:
-                alt_entity = self.hass.states.get("sensor.moon_phase") or self.hass.states.get("sensor.moon_phase_value")
-                if alt_entity:
-                    try:
-                        phase_val = self._coerce_phase(alt_entity.state)
-                    except Exception:
-                        phase_val = None
-
-            # If altitude missing, approximate using sinusoidal day-based heuristic
-            if altitude is None:
-                now = dt_util.now()
-                # map time-of-day to an approximate altitude [-90, 90] for a crude proxy
-                frac = (now.timestamp() / 3600.0) % 24.0
-                altitude = 45.0 * math.sin((frac / 24.0) * 2.0 * math.pi - math.pi / 2.0)
+            except Exception:
+                # Do not fallback to heuristics 	6 keep altitude None if calculation fails
+                altitude = None
 
             return {"phase": phase_val, "altitude": altitude}
         except Exception:
-            _LOGGER.exception("Error reading moon data from HA")
+            _LOGGER.exception("Error computing moon data internally")
             return {"phase": None, "altitude": None}
 
     async def _get_sun_data(self) -> Dict[str, Optional[float]]:

@@ -42,25 +42,74 @@ async def calculate_astronomy_forecast(
     """
     ts = load.timescale()
 
+    # Ensure local data directory exists
     data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
     os.makedirs(data_dir, exist_ok=True)
 
     eph_path = os.path.join(data_dir, "de421.bsp")
 
+    # Try to reuse a cached ephemeris object stored on hass.data to avoid reloading the
+    # BSP file (and to avoid repeated downloads). Cache structure in hass.data[DOMAIN]["ephemeris"]:
+    # {"obj": <eph object>, "path": <path>, "mtime": <file mtime or None>}
     try:
-        if not os.path.exists(eph_path):
-            _LOGGER.info("Skyfield ephemeris not found — downloading to %s", eph_path)
+        from ..const import DOMAIN
 
-            def download_eph():
-                import urllib.request
+        hass_store = hass.data.setdefault(DOMAIN, {})
+        eph_cache = hass_store.get("ephemeris") or {}
+        eph = None
 
-                url = "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de421.bsp"
-                urllib.request.urlretrieve(url, eph_path)
-                return load(eph_path)
+        # Determine file mtime if file exists
+        try:
+            file_mtime = os.path.getmtime(eph_path) if os.path.exists(eph_path) else None
+        except Exception:
+            file_mtime = None
 
-            eph = await hass.async_add_executor_job(download_eph)
-        else:
-            eph = await hass.async_add_executor_job(lambda: load(eph_path))
+        # Reuse cached object if path and mtime match
+        try:
+            if eph_cache and eph_cache.get("obj") is not None and eph_cache.get("path") == eph_path and eph_cache.get("mtime") == file_mtime:
+                eph = eph_cache.get("obj")
+        except Exception:
+            eph = None
+
+        # If not cached, load (or download) and store in hass.data cache
+        if eph is None:
+            if not os.path.exists(eph_path):
+                _LOGGER.info("Skyfield ephemeris not found — downloading to %s", eph_path)
+
+                def download_eph():
+                    import urllib.request
+
+                    url = "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de421.bsp"
+                    urllib.request.urlretrieve(url, eph_path)
+                    return load(eph_path)
+
+                eph = await hass.async_add_executor_job(download_eph)
+            else:
+                eph = await hass.async_add_executor_job(lambda: load(eph_path))
+
+            # Store in cache
+            try:
+                hass_store["ephemeris"] = {"obj": eph, "path": eph_path, "mtime": os.path.getmtime(eph_path) if os.path.exists(eph_path) else None}
+            except Exception:
+                # Don't let caching failures break functionality
+                _LOGGER.debug("Failed to cache ephemeris in hass.data", exc_info=True)
+    except Exception as exc:
+        _LOGGER.error("Failed to load or download ephemeris: %s", exc, exc_info=True)
+        # Return empty forecast (all None) for requested days
+        forecast = {}
+        start_date = datetime.now(timezone.utc).date()
+        for i in range(days):
+            d = start_date + timedelta(days=i)
+            forecast[d.isoformat()] = {
+                "moon_phase": None,
+                "moonrise": None,
+                "moonset": None,
+                "moon_transit": None,
+                "moon_underfoot": None,
+                "sunrise": None,
+                "sunset": None,
+            }
+        return forecast
     except Exception as exc:
         _LOGGER.error("Failed to load or download ephemeris: %s", exc, exc_info=True)
         # Return empty forecast (all None) for requested days
