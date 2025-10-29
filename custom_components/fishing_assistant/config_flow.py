@@ -449,7 +449,7 @@ class FishingAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 continue
             species_list = self.species_loader.get_species_by_region(region_id)
             for species in species_list:
-                if species.get("type") != "ocean":
+                if species.get("habitat") != "ocean":
                     continue
                 if (
                     not species["id"].startswith("general_mixed")
