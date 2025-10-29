@@ -65,6 +65,56 @@ class TideProxy:
                 "source": "astronomical_calculation",
             }
 
+            # Build a simple per-day tide forecast using astronomical sampling (moon phase at local solar noon)
+            try:
+                # Import here to avoid skyfield dependency at module import time
+                from .helpers.astro import calculate_astronomy_forecast  # local import for optional feature
+
+                try:
+                    astro_forecast = await calculate_astronomy_forecast(self.hass, self.latitude, self.longitude, days=7)
+                except Exception:
+                    astro_forecast = {}
+
+                forecast: Dict[str, Any] = {}
+                for date_str, a in (astro_forecast or {}).items():
+                    try:
+                        moon_phase = a.get("moon_phase") if isinstance(a, dict) else None
+
+                        # Prefer the moon_transit sampling time if present; otherwise use local noon UTC
+                        dt_sample = None
+                        mt = a.get("moon_transit") if isinstance(a, dict) else None
+                        if mt:
+                            try:
+                                dt_sample = dt_util.parse_datetime(mt)
+                            except Exception:
+                                dt_sample = None
+
+                        if dt_sample is None:
+                            try:
+                                d = datetime.fromisoformat(date_str)
+                                dt_sample = datetime(d.year, d.month, d.day, 12, 0, 0, tzinfo=timezone.utc)
+                            except Exception:
+                                dt_sample = datetime.now(timezone.utc)
+
+                        moon_data_day = {"phase": moon_phase, "altitude": None}
+                        state_day = self._calculate_tide_state(moon_data_day, {"elevation": None}, dt_sample)
+                        strength_day = self._calculate_tide_strength(moon_data_day)
+
+                        forecast[date_str] = {
+                            "state": state_day,
+                            "strength": int(strength_day),
+                            "datetime": dt_sample.strftime("%Y-%m-%dT%H:%M:%SZ") if dt_sample else "",
+                            "source": "astronomical_calculation",
+                        }
+                    except Exception:
+                        # Skip problematic days but continue building forecast
+                        _LOGGER.debug("Failed to build tide forecast entry for %s", date_str, exc_info=True)
+
+                if forecast:
+                    raw_tide["forecast"] = forecast
+            except Exception:
+                _LOGGER.debug("Astronomical tide forecast generation unavailable; continuing with snapshot only", exc_info=True)
+
             # Normalize via DataFormatter to ensure callers receive expected shape
             normalized = DataFormatter.format_tide_data(raw_tide)
 
