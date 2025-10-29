@@ -208,18 +208,52 @@ class TideProxy:
             return {"phase": None, "altitude": None}
 
     async def _get_sun_data(self) -> Dict[str, Optional[float]]:
-        """Extract sun elevation if available."""
+        """Compute sun elevation (degrees) using Skyfield ephemeris when available.
+
+        This method intentionally does NOT read the Home Assistant `sun.sun` entity.
+        If Skyfield or the ephemeris is unavailable, return {"elevation": None}.
+        """
         try:
-            sun = self.hass.states.get("sun.sun")
-            if sun and hasattr(sun, "attributes"):
-                elev = sun.attributes.get("elevation")
+            # Local import to avoid hard dependency at module import time
+            from skyfield.api import load, wgs84  # type: ignore
+            import os
+
+            # Reuse same ephemeris path as used elsewhere (data/de421.bsp)
+            data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+            eph_path = os.path.join(data_dir, "de421.bsp")
+
+            def _load_eph():
+                return load(eph_path)
+
+            # Load ephemeris in executor to avoid blocking the event loop
+            eph = await self.hass.async_add_executor_job(_load_eph)
+            ts = load.timescale()
+
+            now = dt_util.now()
+            # Build skyfield Time from current UTC components
+            t = ts.utc(now.year, now.month, now.day, now.hour, now.minute, now.second)
+
+            earth = eph["earth"]
+            sun_obj = eph["sun"]
+            location = wgs84.latlon(self.latitude, self.longitude)
+
+            # Compute apparent position of the sun from the location (altitude)
+            astrom = earth.at(t).observe(sun_obj).apparent()
+            alt, az, distance = astrom.altaz()
+            try:
+                elevation = float(getattr(alt, "degrees", None))
+            except Exception:
+                # alt may be Angle-like; attempt to access .degrees
                 try:
-                    return {"elevation": float(elev) if elev is not None else None}
+                    elevation = float(alt.degrees)
                 except Exception:
-                    return {"elevation": None}
+                    elevation = None
+
+            return {"elevation": elevation}
         except Exception:
-            _LOGGER.debug("Error reading sun entity", exc_info=True)
-        return {"elevation": None}
+            # Do not fallback to reading HA entity; if Skyfield fails, return None
+            _LOGGER.debug("Skyfield sun elevation calculation failed; returning None", exc_info=True)
+            return {"elevation": None}
 
     def _calculate_tide_state(self, moon_data: Dict[str, Optional[float]], sun_data: Dict[str, Optional[float]], now: datetime) -> str:
         """Determine tide state (rising/falling/slack_high/slack_low) using a simple heuristic."""
