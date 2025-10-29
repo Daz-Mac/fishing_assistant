@@ -6,7 +6,7 @@ from homeassistant.util import dt as dt_util
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from datetime import datetime, timezone, date, time
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 from .const import (
     DOMAIN,
@@ -754,6 +754,45 @@ class OceanFishingScoreSensor(SensorEntity):
             marine_data_raw = await self._marine_fetcher.get_marine_data() if self._marine_fetcher else None
             astro_data = await self._get_astro_data()
 
+            # If configuration requires marine data, and it's missing or empty, set an error attribute and stop.
+            if self._config_entry.data.get(CONF_MARINE_ENABLED, True):
+                if not marine_data_raw or not isinstance(marine_data_raw, dict) or not marine_data_raw.get("current"):
+                    err_msg = "Missing required marine data — ocean scoring requires marine snapshots (current + forecast)."
+                    _LOGGER.error(err_msg)
+                    # Populate attributes with clear error state so the user can debug in HA without silent zeros
+                    self._state = None
+                    self._attrs.update(
+                        {
+                            "status": "error",
+                            "error_message": err_msg,
+                            "forecast_raw": [],
+                            "marine": marine_data_raw or {},
+                            "tide": tide_data_raw or {},
+                            "weather": weather_data_raw or {},
+                            "astro": astro_data or {},
+                        }
+                    )
+                    return
+
+            # If configuration uses tide proxy, require tide data presence
+            if self._config_entry.data.get(CONF_TIDE_MODE) == TIDE_MODE_PROXY:
+                if not tide_data_raw or not isinstance(tide_data_raw, dict) or tide_data_raw.get("state") in (None, "unknown"):
+                    err_msg = "Missing required tide data — tide proxy mode configured but tide data unavailable."
+                    _LOGGER.error(err_msg)
+                    self._state = None
+                    self._attrs.update(
+                        {
+                            "status": "error",
+                            "error_message": err_msg,
+                            "forecast_raw": [],
+                            "marine": marine_data_raw or {},
+                            "tide": tide_data_raw or {},
+                            "weather": weather_data_raw or {},
+                            "astro": astro_data or {},
+                        }
+                    )
+                    return
+
             # Calculate score using scorer
             result = self._scorer.calculate_score(
                 weather_data=weather_data_raw,
@@ -776,6 +815,91 @@ class OceanFishingScoreSensor(SensorEntity):
 
             # Forecast (may raise) — let failures bubble up
             forecast_raw = await self._weather_fetcher.get_forecast(days=7)
+
+            # Convert tide/marine forecast shapes into lists usable by scorer.calculate_forecast
+            def _to_list_forecast(f_obj: Any) -> List[Dict[str, Any]]:
+                """Normalize various forecast shapes into a list of dict items with a 'datetime' key."""
+                out: List[Dict[str, Any]] = []
+                if not f_obj:
+                    return out
+                # Already a list
+                if isinstance(f_obj, list):
+                    return f_obj
+                # If dict with 'items' list
+                if isinstance(f_obj, dict):
+                    if isinstance(f_obj.get("items"), list):
+                        return f_obj.get("items")
+                    # If dict keyed by date (YYYY-MM-DD) -> values, convert to list with datetime
+                    # or if hourly dicts exist under 'hourly', keep them as items by converting keys
+                    # to datetime where possible.
+                    for k, v in f_obj.items():
+                        # Skip meta keys
+                        if k in ("source", "last_updated"):
+                            continue
+                        entry: Dict[str, Any] = {}
+                        if isinstance(v, dict):
+                            entry.update(v)
+                        # Try parse key as date/datetime
+                        dt_val = None
+                        try:
+                            dt_val = dt_util.parse_datetime(str(k))
+                        except Exception:
+                            dt_val = None
+                        if dt_val is None:
+                            try:
+                                d = date.fromisoformat(str(k))
+                                dt_val = datetime.combine(d, time.min, tzinfo=timezone.utc)
+                            except Exception:
+                                dt_val = None
+                        entry["datetime"] = dt_val if dt_val is not None else k
+                        out.append(entry)
+                    return out
+                # Unknown shape -> leave empty
+                return out
+
+            tide_list = _to_list_forecast((tide_data_raw or {}).get("forecast") if isinstance(tide_data_raw, dict) else None)
+            marine_list = _to_list_forecast((marine_data_raw or {}).get("forecast") if isinstance(marine_data_raw, dict) else None)
+
+            forecast_scores: List[Dict[str, Any]] = []
+            forecast_raw_detailed: List[Dict[str, Any]] = []
+
+            if forecast_raw and isinstance(forecast_raw, dict):
+                # Build weather forecast list similar to freshwater flow (date -> data)
+                forecast_list = []
+                for date_str, data in forecast_raw.items():
+                    forecast_date = None
+                    try:
+                        forecast_date = dt_util.parse_datetime(date_str)
+                    except Exception:
+                        forecast_date = None
+
+                    if forecast_date is None:
+                        try:
+                            d = date.fromisoformat(date_str)
+                            forecast_date = datetime.combine(d, time.min, tzinfo=timezone.utc)
+                        except Exception:
+                            _LOGGER.debug("Unable to parse forecast date key: %s", date_str)
+                            continue
+
+                    if forecast_date.tzinfo is None:
+                        forecast_date = forecast_date.replace(tzinfo=timezone.utc)
+
+                    data = dict(data) if isinstance(data, dict) else {}
+                    data["datetime"] = forecast_date
+                    forecast_list.append(data)
+
+                if forecast_list:
+                    # Pass tide/marine lists so scorer can incorporate them into per-step scoring
+                    forecast_scores = await self._scorer.calculate_forecast(
+                        weather_forecast=forecast_list,
+                        tide_forecast=tide_list,
+                        marine_forecast=marine_list,
+                    )
+
+                    # The scorer now returns per-entry component breakdowns and inputs; expose as forecast_raw
+                    # Keep both canonical 'forecast' (DataFormatter) and 'forecast_raw' for inspectability
+                    forecast_raw_detailed = forecast_scores
+                    self._attrs["forecast_raw"] = forecast_raw_detailed
 
             # Use DataFormatter to produce canonical sensor attributes that include
             # formatted weather, marine, tide, astro and forecast structures.
@@ -803,6 +927,13 @@ class OceanFishingScoreSensor(SensorEntity):
 
             # Merge results: canonical formatted_attrs + legacy keys
             self._attrs = {**formatted_attrs, **legacy_updates}
+
+            # Attach forecast_raw (detailed) if we produced it
+            if forecast_raw_detailed:
+                self._attrs["forecast_raw"] = forecast_raw_detailed
+            else:
+                # Ensure key always present for inspectability
+                self._attrs.setdefault("forecast_raw", [])
 
             # Add a compact 'safety' summary (scorer.check_safety returns status + reasons)
             try:

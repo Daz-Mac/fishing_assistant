@@ -2,15 +2,17 @@
 
 This version hardens datetime handling (timezone-aware via Home Assistant dt_util),
 defensive parsing of input shapes (forecast, astro, tide, marine), and aligns
-behavior with the "fail loudly" policy preferred by the user: required missing
-data will raise errors rather than silently returning defaults.
+behavior with the "fail loudly" / clear-error-attribute policy: when required
+marine or tide data is missing the scorer returns an explicit error message
+(instead of silently producing a default score) while still being defensive
+for non-critical data.
 """
 
 from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional, List, Any
+from typing import Dict, Optional, List, Any, Tuple
 
 from homeassistant.util import dt as dt_util
 
@@ -141,38 +143,115 @@ class OceanFishingScorer(BaseScorer):
         marine_data: Optional[Dict[str, Any]] = None,
         current_time: Optional[Any] = None,
     ) -> Dict[str, Any]:
-        """Calculate the fishing score. This method validates inputs and raises on critical missing data."""
+        """Calculate the fishing score for a single time period.
+
+        Instead of allowing low-level exceptions to propagate for common mis-config
+        cases (missing marine/tide), this method returns a structured result that
+        contains either the calculated score or a clear 'error' field and a
+        'forecast_raw' breakdown that helps debug why the score is what it is.
+        """
+
+        result: Dict[str, Any] = {"score": None, "component_scores": None, "forecast_raw": None}
 
         # Validate weather_data shape
         if not weather_data or not isinstance(weather_data, dict):
             _LOGGER.error("OceanFishingScorer requires non-empty weather_data dict")
-            raise RuntimeError("Missing or invalid weather_data for ocean scoring")
+            result["error"] = "Missing or invalid weather_data for ocean scoring"
+            return result
 
-        # If config requires marine data, ensure it is present
+        # If config requires marine data, ensure it is present — return structured error
         if self.config.get(CONF_MARINE_ENABLED, True) and marine_data is None:
             _LOGGER.error("Marine data required by configuration but not provided to OceanFishingScorer")
-            raise RuntimeError("Missing required marine data")
+            result["error"] = "Missing required marine data"
+            return result
 
         # If config uses tide proxy, require tide_data presence
         if self.config.get(CONF_TIDE_MODE) == TIDE_MODE_PROXY and tide_data is None:
             _LOGGER.error("Tide proxy configured but tide_data not provided to OceanFishingScorer")
-            raise RuntimeError("Missing required tide data for proxy tide mode")
+            result["error"] = "Missing required tide data for proxy tide mode"
+            return result
 
-        # Delegate to BaseScorer for the numeric calculation — keep defensive parsing inside
-        result = super().calculate_score(weather_data, astro_data, tide_data, marine_data, current_time)
-
-        # Attach formatted forecast when present (tolerant shapes) — failures here are not fatal
+        # Attempt to compute component scores defensively and produce a rich breakdown
         try:
-            embedded_forecast = None
-            if isinstance(weather_data, dict):
-                embedded_forecast = weather_data.get("forecast") or weather_data.get("forecasts")
-            if isinstance(embedded_forecast, list):
-                formatted = self._format_forecast(embedded_forecast, astro_data or {}, tide_data, marine_data)
-                result["forecast"] = formatted
-        except Exception:
-            _LOGGER.debug("Failed to format embedded forecast", exc_info=True)
+            # Format the inputs for stable shapes (DataFormatter provides normalization)
+            formatted_weather = DataFormatter.format_weather_data(weather_data or {})
+            formatted_astro = DataFormatter.format_astro_data(astro_data or {})
+            formatted_tide = DataFormatter.format_tide_data(tide_data) if tide_data else None
+            formatted_marine = DataFormatter.format_marine_data(marine_data) if marine_data else None
 
-        return result
+            # Compute raw component scores (0..10). _calculate_base_score also formats defensively,
+            # so we can pass formatted inputs OR original; keep using formatted to be explicit.
+            component_scores = self._calculate_base_score(formatted_weather, formatted_astro, formatted_tide, formatted_marine, current_time)
+
+            # Compute final weighted score (0..10)
+            weights = self._get_factor_weights()
+            score_0_10 = self._weighted_average(component_scores, weights)
+
+            # Normalized 0..100 score for frontend
+            score_0_100 = round(score_0_10 * 10.0, 1)
+
+            # Build a readable breakdown for debugging / forecast_raw
+            forecast_raw = {
+                "datetime": None,
+                "raw_weather": weather_data,
+                "formatted_weather": formatted_weather,
+                "astro_used": formatted_astro,
+                "tide_used": formatted_tide,
+                "marine_used": formatted_marine,
+                "component_scores": component_scores,  # raw 0..10 per factor
+                "component_weights": weights,
+                "score_0_10": round(score_0_10, 2),
+                "score_0_100": score_0_100,
+            }
+
+            # Attach datetime if we can coerce one
+            dt_obj = self._coerce_datetime(current_time or weather_data.get("datetime") or weather_data.get("time") or weather_data.get("timestamp"))
+            forecast_raw["datetime"] = dt_util.as_utc(dt_obj).isoformat() if dt_obj else None
+
+            # Fill result with both raw breakdown and normalized values for compatibility
+            result["component_scores"] = component_scores
+            result["score"] = round(score_0_10, 2)
+            result["score_100"] = score_0_100
+            result["forecast_raw"] = forecast_raw
+
+            # Merge in any summary from parent implementation (keeps backwards compatibility)
+            try:
+                parent_result = super().calculate_score(weather_data, astro_data, tide_data, marine_data, current_time)
+                # parent_result may contain things like species-specific adjustments; prefer parent's keys
+                if isinstance(parent_result, dict):
+                    # preserve computed fields but allow parent to override if it has extra info
+                    parent_result.update(result)
+                    return parent_result
+            except Exception:
+                # If parent calculation fails we already have a defensively computed result; log and continue
+                _LOGGER.debug("Parent BaseScorer.calculate_score failed; using local computed result", exc_info=True)
+
+            return result
+
+        except RuntimeError as e:
+            # This likely arises from missing-but-required data in lower-level scoring.
+            _LOGGER.error("Ocean scoring failed due to configuration/data error: %s", str(e))
+            result["error"] = str(e)
+            # Provide a minimal forecast_raw to aid debugging
+            result["forecast_raw"] = {
+                "raw_weather": weather_data,
+                "astro": astro_data,
+                "tide": tide_data,
+                "marine": marine_data,
+                "error": str(e),
+            }
+            return result
+        except Exception as e:
+            _LOGGER.exception("Unexpected error during ocean scoring")
+            result["error"] = f"Unexpected error: {e}"
+            result["forecast_raw"] = {
+                "raw_weather": weather_data,
+                "astro": astro_data,
+                "tide": tide_data,
+                "marine": marine_data,
+                "error": str(e),
+            }
+            return result
 
     def _calculate_base_score(
         self,
@@ -302,7 +381,16 @@ class OceanFishingScorer(BaseScorer):
         tide_data: Optional[List[Dict[str, Any]]] = None,
         marine_data: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
-        """Format forecast data for frontend compatibility with tolerant parsing."""
+        """Format forecast data for frontend compatibility with tolerant parsing.
+
+        For each forecast step we provide:
+         - datetime
+         - score (0..10)
+         - score_100 (0..100)
+         - component_scores (raw 0..10)
+         - component_scores_100 (0..100)
+         - forecast_raw: includes raw inputs used in calculation and any error messages
+        """
         formatted_forecast: List[Dict[str, Any]] = []
 
         for entry in (forecast_data or []):
@@ -313,7 +401,9 @@ class OceanFishingScorer(BaseScorer):
                     continue
 
                 # Tolerant extraction of common weather fields
-                temperature = entry.get("temperature") or entry.get("temp") or entry.get("temperature_2m") or entry.get("t")
+                temperature = entry.get("temperature") or entry.get("temp") or entry.get("temperature_2m") or entry.get(
+                    "t"
+                )
                 wind_speed = entry.get("wind_speed") or entry.get("wind") or entry.get("windspeed")
                 wind_gust = entry.get("wind_gust") or entry.get("windspeed_gusts")
                 pressure = entry.get("pressure") or entry.get("mslp") or entry.get("pressure_hpa")
@@ -323,9 +413,9 @@ class OceanFishingScorer(BaseScorer):
 
                 # Coerce wind numeric value for internal scoring
                 try:
-                    ws_val = float(wind_speed) if wind_speed is not None else 0.0
+                    ws_val = float(wind_speed) if wind_speed is not None else None
                 except Exception:
-                    ws_val = 0.0
+                    ws_val = None
 
                 forecast_weather = {
                     "temperature": temperature,
@@ -356,31 +446,78 @@ class OceanFishingScorer(BaseScorer):
                 except Exception:
                     _LOGGER.debug("Error finding tide/marine entry for forecast time", exc_info=True)
 
-                # Calculate component scores for the forecast slot
-                component_scores = self._calculate_base_score(forecast_weather, astro_for_entry, tide_for_entry, marine_for_entry, dt)
+                # Attempt to compute per-factor component scores and final score; capture errors
+                try:
+                    component_scores = self._calculate_base_score(forecast_weather, astro_for_entry, tide_for_entry, marine_for_entry, dt)
+                    weights = self._get_factor_weights()
+                    score_0_10 = self._weighted_average(component_scores, weights)
+                    score_0_100 = round(score_0_10 * 10.0, 1)
 
-                # Calculate final weighted score
-                weights = self._get_factor_weights()
-                score = self._weighted_average(component_scores, weights)
+                    # Convert component scores to 0..100 for frontend display
+                    component_scores_100 = {k: round(float(v) * 10.0, 1) for k, v in component_scores.items()}
 
-                # Normalize component scores for frontend (convert 0-10 -> 0-100)
-                normalized_scores = {}
-                for key, value in component_scores.items():
-                    try:
-                        normalized_scores[key] = round(float(value) * 10.0, 1)
-                    except Exception:
-                        normalized_scores[key] = 0.0
-
-                formatted_forecast.append(
-                    {
-                        "datetime": dt_util.as_utc(dt).isoformat() if dt else None,
-                        "score": round(score, 1),
+                    forecast_entry = {
+                        "datetime": dt_util.as_utc(dt).isoformat(),
+                        "score": round(score_0_10, 2),
+                        "score_100": score_0_100,
                         "temperature": temperature,
                         "wind_speed": ws_val,
                         "pressure": pressure,
-                        "component_scores": normalized_scores,
+                        "component_scores": component_scores,
+                        "component_scores_100": component_scores_100,
+                        "forecast_raw": {
+                            "raw_input": entry,
+                            "formatted_weather": forecast_weather,
+                            "astro_used": astro_for_entry,
+                            "tide_used": tide_for_entry,
+                            "marine_used": marine_for_entry,
+                            "weights": weights,
+                        },
                     }
-                )
+                except RuntimeError as e:
+                    # Missing critical data per configuration; provide a clear failure entry
+                    _LOGGER.error("Forecast scoring failed for %s due to missing data: %s", dt, str(e))
+                    forecast_entry = {
+                        "datetime": dt_util.as_utc(dt).isoformat(),
+                        "score": None,
+                        "score_100": None,
+                        "temperature": temperature,
+                        "wind_speed": ws_val,
+                        "pressure": pressure,
+                        "component_scores": None,
+                        "component_scores_100": None,
+                        "forecast_raw": {
+                            "raw_input": entry,
+                            "formatted_weather": forecast_weather,
+                            "astro_used": astro_for_entry,
+                            "tide_used": tide_for_entry,
+                            "marine_used": marine_for_entry,
+                            "error": str(e),
+                        },
+                    }
+                except Exception:
+                    _LOGGER.exception("Error calculating forecast component scores for entry: %s", entry)
+                    forecast_entry = {
+                        "datetime": dt_util.as_utc(dt).isoformat(),
+                        "score": None,
+                        "score_100": None,
+                        "temperature": temperature,
+                        "wind_speed": ws_val,
+                        "pressure": pressure,
+                        "component_scores": None,
+                        "component_scores_100": None,
+                        "forecast_raw": {
+                            "raw_input": entry,
+                            "formatted_weather": forecast_weather,
+                            "astro_used": astro_for_entry,
+                            "tide_used": tide_for_entry,
+                            "marine_used": marine_for_entry,
+                            "error": "Unexpected error during scoring",
+                        },
+                    }
+
+                formatted_forecast.append(forecast_entry)
+
             except Exception:
                 _LOGGER.warning("Error formatting forecast entry: %s. Entry=%s", entry, exc_info=True)
                 continue
@@ -393,7 +530,12 @@ class OceanFishingScorer(BaseScorer):
         tide_forecast: Optional[List[Dict[str, Any]]] = None,
         marine_forecast: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
-        """Calculate fishing scores for forecast periods, aligning astro/tide/marine data."""
+        """Calculate fishing scores for forecast periods, aligning astro/tide/marine data.
+
+        Returns a list of detailed dicts. Each entry will include either a computed
+        score and a 'forecast_raw' breakdown, or an 'error' field if required data
+        was missing or something went wrong.
+        """
         forecast_scores: List[Dict[str, Any]] = []
 
         # Ensure astro cache is fresh (1 hour TTL)
@@ -430,7 +572,20 @@ class OceanFishingScorer(BaseScorer):
 
             except Exception:
                 _LOGGER.exception("Error calculating forecast score for entry: %s", weather_data)
-                continue
+                # create an error entry to keep alignment with input
+                try:
+                    dt = self._coerce_datetime(weather_data.get("datetime") or weather_data.get("time") or weather_data.get("timestamp"))
+                    forecast_scores.append(
+                        {
+                            "datetime": dt_util.as_utc(dt).isoformat() if dt else None,
+                            "score": None,
+                            "error": "Unhandled exception while scoring (see logs)",
+                            "forecast_raw": {"raw_input": weather_data},
+                        }
+                    )
+                except Exception:
+                    # if even that fails, append a minimal placeholder
+                    forecast_scores.append({"datetime": None, "score": None, "error": "Unhandled exception while scoring"})
 
         return forecast_scores
 
@@ -958,7 +1113,7 @@ class OceanFishingScorer(BaseScorer):
         except Exception:
             return LIGHT_DAY
 
-    def check_safety(self, weather_data: Optional[Dict[str, Any]], marine_data: Optional[Dict[str, Any]]) -> (str, List[str]):
+    def check_safety(self, weather_data: Optional[Dict[str, Any]], marine_data: Optional[Dict[str, Any]]) -> Tuple[str, List[str]]:
         """Assess safety for fishing, returning ('safe'|'caution'|'unsafe'|'unknown', reasons).
 
         This method now requires a valid habitat preset in config; missing or invalid presets
