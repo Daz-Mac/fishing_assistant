@@ -34,6 +34,17 @@ from .api import OpenMeteoClient
 _LOGGER = logging.getLogger(__name__)
 
 
+def _try_get(src: Dict[str, Any], *keys: str) -> Any:
+    """Return the first non-None value for a list of possible keys from a mapping."""
+    for k in keys:
+        if not isinstance(k, str):
+            continue
+        # use get to avoid KeyError; return even falsy values (0) as long as not None
+        if k in src:
+            return src.get(k)
+    return None
+
+
 class OpenMeteoAdapter:
     """
     Adapter to expose a small, defensive interface compatible with the WeatherFetcher expectations.
@@ -68,12 +79,19 @@ class OpenMeteoAdapter:
                 continue
             date_key = dt.astimezone(timezone.utc).date().isoformat()
 
-            temp = item.get("temperature_2m")
-            wind_ms = item.get("wind_speed_10m")  # m/s
-            gust_ms = item.get("wind_gust_10m") or item.get("wind gust") or item.get("windgusts_10m")
-            cloud = item.get("cloudcover") or item.get("cloud_cover")
-            precip = item.get("precipitation") or item.get("rain") or item.get("precip")
-            pressure = item.get("pressure_msl") or item.get("pressure")
+            temp = _try_get(item, "temperature_2m", "temp", "air_temperature")
+            wind_ms = _try_get(item, "wind_speed_10m", "windspeed_10m", "wind_speed")
+            gust_ms = _try_get(
+                item,
+                "wind_gust_10m",
+                "wind_gust",
+                "windgusts_10m",
+                "wind_gusts_10m",
+                "wind_gust_kph",
+            )
+            cloud = _try_get(item, "cloudcover", "cloud_cover", "clouds")
+            precip = _try_get(item, "precipitation", "rain", "precip", "rain_sum")
+            pressure = _try_get(item, "pressure_msl", "pressure")
 
             if date_key not in per_day:
                 per_day[date_key] = {
@@ -97,12 +115,14 @@ class OpenMeteoAdapter:
 
             if wind_ms is not None:
                 try:
-                    entry["wind_speed"] += float(wind_ms) * 3.6  # m/s -> km/h
+                    # Open-Meteo returns m/s; convert to km/h for integration display/consistency
+                    entry["wind_speed"] += float(wind_ms) * 3.6
                 except Exception:
                     _LOGGER.debug("Skipping non-numeric wind value: %s", wind_ms)
 
             if gust_ms is not None:
                 try:
+                    # gust might already be in m/s; convert to km/h when numeric
                     gust_val = float(gust_ms) * 3.6
                     if gust_val > entry["wind_gust"]:
                         entry["wind_gust"] = gust_val
@@ -182,12 +202,19 @@ class OpenMeteoAdapter:
         if not best:
             return None
 
-        temp = best.get("temperature_2m")
-        wind_ms = best.get("wind_speed_10m")
-        gust_ms = best.get("wind_gust_10m") or best.get("windgusts_10m")
-        cloud = best.get("cloudcover") or best.get("cloud_cover")
-        precip = best.get("precipitation") or best.get("rain") or best.get("precip")
-        pressure = best.get("pressure_msl") or best.get("pressure")
+        temp = _try_get(best, "temperature_2m", "temp", "air_temperature")
+        wind_ms = _try_get(best, "wind_speed_10m", "windspeed_10m", "wind_speed")
+        gust_ms = _try_get(
+            best,
+            "wind_gust_10m",
+            "wind_gust",
+            "windgusts_10m",
+            "wind_gusts_10m",
+            "wind_gust_kph",
+        )
+        cloud = _try_get(best, "cloudcover", "cloud_cover", "clouds")
+        precip = _try_get(best, "precipitation", "rain", "precip", "rain_sum")
+        pressure = _try_get(best, "pressure_msl", "pressure")
 
         try:
             temperature = float(temp) if temp is not None else None

@@ -3,7 +3,6 @@ from pathlib import Path
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers import config_validation as cv
 from homeassistant.core import HomeAssistant
-from homeassistant.components.http import StaticPathConfig
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -40,43 +39,43 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return unload_ok
 
 async def _register_custom_card(hass: HomeAssistant) -> None:
-    """Register the custom Lovelace card."""
+    """Register the custom Lovelace card.
+
+    This registers a static path for the card under /fishing_assistant_local so users
+    can add it as a JavaScript module resource in the frontend. Auto-reload of
+    Lovelace resources is intentionally not forced by the integration.
+    """
     # Only register once
     if "fishing_assistant_card_registered" in hass.data.get(DOMAIN, {}):
         return
-    
+
     hass.data.setdefault(DOMAIN, {})
-    
+
     # Register the card resource directory
     card_dir = Path(__file__).parent / "www"
     card_url = "/fishing_assistant_local"
-    
+
     try:
-        # Register the static path using async method with keyword arguments
-        await hass.http.async_register_static_paths([
-            StaticPathConfig(url_path=card_url, path=str(card_dir), cache_headers=False)
-        ])
+        # Use the synchronous API available on hass.http to register a static path.
+        # This avoids depending on a specific StaticPathConfig or async helper which
+        # may change across HA versions.
+        try:
+            # Some HA versions expose register_static_path
+            hass.http.register_static_path(card_url, str(card_dir), cache_headers=False)
+        except Exception:
+            # Fallback - some HA versions use a different method name; attempt the common one
+            try:
+                hass.http.register_static_path(str(card_dir), card_url, cache_headers=False)
+            except Exception as exc:
+                _LOGGER.debug("Could not register static path for fishing assistant card: %s", exc)
     except Exception as e:
         _LOGGER.debug("Could not register static paths for fishing assistant card: %s", e)
 
-    # Auto-register the resource in Lovelace (best effort)
+    # Log instructions for the user to add the resource manually to Lovelace
     resource_url = f"{card_url}/fishing-assistant-card.js"
-    
-    try:
-        # Try to auto-register the resource using the service call method
-        await hass.services.async_call(
-            "lovelace",
-            "reload_resources",
-            {},
-            blocking=False,
-        )
-        
-        _LOGGER.info("Registered Fishing Assistant card at %s", resource_url)
-        _LOGGER.info("Please add the card resource manually in Lovelace: Settings → Dashboards → Resources")
-        _LOGGER.info("Resource URL: %s", resource_url)
-        _LOGGER.info("Resource Type: JavaScript Module")
-        
-    except Exception as e:
-        _LOGGER.debug("Could not reload resources: %s", e)
-    
+    _LOGGER.info("Fishing Assistant card static files available at %s", resource_url)
+    _LOGGER.info("Please add the card resource manually in Lovelace: Settings → Dashboards → Resources")
+    _LOGGER.info("Resource URL: %s", resource_url)
+    _LOGGER.info("Resource Type: JavaScript Module")
+
     hass.data[DOMAIN]["fishing_assistant_card_registered"] = True

@@ -19,9 +19,11 @@ Normalization contract (per hourly item):
     ...
 }
 
-This version hardens parsing, improves logging, is defensive about missing keys,
-coerces numeric-like strings to numbers, normalizes times to UTC ISO strings
-(with 'Z' suffix), and ensures predictable list shapes for downstream consumers.
+Changes in this file:
+- Request Open-Meteo using API variable names (e.g. `windspeed_10m`).
+- Normalize response keys to canonical internal names (e.g. `wind_speed_10m`).
+- Accept both API and canonical names where reasonable.
+- Keep robust parsing, defensive logging, numeric coercion, and UTC time normalization.
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ from __future__ import annotations
 import logging
 import math
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 import aiohttp
 from homeassistant.util import dt as dt_util
@@ -37,6 +39,36 @@ from homeassistant.util import dt as dt_util
 from .const import OPEN_METEO_MARINE_URL, OPEN_METEO_URL
 
 _LOGGER = logging.getLogger(__name__)
+
+# Map internal canonical names -> Open-Meteo API variable names (used for requests)
+CANONICAL_TO_API: Dict[str, str] = {
+    "temperature_2m": "temperature_2m",
+    "cloudcover": "cloudcover",
+    "precipitation": "precipitation",
+    "wind_speed_10m": "windspeed_10m",  # Open-Meteo uses "windspeed_10m"
+    "wind_direction_10m": "winddirection_10m",
+    "pressure_msl": "pressure_msl",
+    # marine
+    "wave_height": "wave_height",
+    "wave_period": "wave_period",
+    "sea_surface_temperature": "sea_surface_temperature",
+}
+
+# Reverse mapping for response normalization: API name or common variants -> canonical name
+API_TO_CANONICAL: Dict[str, str] = {
+    "temperature_2m": "temperature_2m",
+    "cloudcover": "cloudcover",
+    "precipitation": "precipitation",
+    "windspeed_10m": "wind_speed_10m",
+    "wind_speed_10m": "wind_speed_10m",  # tolerate both key styles if present
+    "winddirection_10m": "wind_direction_10m",
+    "wind_direction_10m": "wind_direction_10m",
+    "pressure_msl": "pressure_msl",
+    "wave_height": "wave_height",
+    "wave_period": "wave_period",
+    "sea_surface_temperature": "sea_surface_temperature",
+    # Add more aliases here if you encounter other naming variants
+}
 
 
 class OpenMeteoClient:
@@ -60,6 +92,7 @@ class OpenMeteoClient:
         Returns a list of dicts (one per hour) normalized per contract.
         """
         if hourly_vars is None:
+            # Use canonical internal names here — they will be mapped to API names below
             hourly_vars = (
                 "temperature_2m",
                 "cloudcover",
@@ -75,19 +108,21 @@ class OpenMeteoClient:
             )
 
         _LOGGER.debug(
-            "Fetching Open-Meteo weather: lat=%s lon=%s vars=%s days=%s",
+            "Fetching Open-Meteo weather: lat=%s lon=%s canonical_vars=%s days=%s",
             latitude,
             longitude,
             ",".join(hourly_vars),
             forecast_days,
         )
 
+        # Request weather (map canonical -> API names)
         weather_data = await self._fetch_open_meteo(
             OPEN_METEO_URL,
             latitude,
             longitude,
             list(hourly_vars),
             forecast_days,
+            is_marine=False,
         )
 
         marine_data = None
@@ -127,19 +162,29 @@ class OpenMeteoClient:
         base_url: str,
         latitude: float,
         longitude: float,
-        hourly: List[str],
+        requested_vars: List[str],
         forecast_days: int,
         is_marine: bool = False,
     ) -> Dict[str, Any]:
         """Perform HTTP GET to Open-Meteo and return parsed JSON.
 
+        requested_vars can be either canonical internal names or API names; we map them
+        to API names when building the request. We also tolerate being passed API names directly.
         Raises RuntimeError for non-200 responses or JSON parse failure.
-        This method is defensive and logs request/response metadata for debugging.
         """
+        # Build the set of API variable names to request
+        api_vars: Set[str] = set()
+        for v in requested_vars:
+            if v in CANONICAL_TO_API:
+                api_vars.add(CANONICAL_TO_API[v])
+            else:
+                # If user passed an API-style name or unknown canonical, request it as-is
+                api_vars.add(v)
+
         params = {
             "latitude": latitude,
             "longitude": longitude,
-            "hourly": ",".join(hourly),
+            "hourly": ",".join(sorted(api_vars)),
             "timezone": "UTC",
             "forecast_days": forecast_days,
         }
@@ -192,8 +237,7 @@ def _to_utc_iso(dt_val: Any) -> Optional[str]:
 
     Note: dt_util.parse_datetime may return a naive datetime interpreted as local time.
     Here we treat naive datetimes as UTC to avoid accidental timezone shifts in normalized
-    output (this matches upstream use in this integration). If you prefer local->UTC
-    conversion, adjust accordingly.
+    output. If you prefer local->UTC conversion, adjust accordingly.
     """
     if dt_val is None:
         return None
@@ -243,7 +287,8 @@ def _coerce_numeric(value: Any) -> Any:
             return None
         # Try integer-ish
         try:
-            if s.isdigit() or (s.startswith("-") and s[1:].isdigit()):
+            # handles negative integers as well
+            if s.lstrip("-").isdigit():
                 return int(s)
             f = float(s)
             if math.isnan(f):
@@ -259,9 +304,10 @@ def _coerce_numeric(value: Any) -> Any:
 
 
 def normalize_hourly_response(raw: Optional[Dict[str, Any]]) -> Dict[str, List[Any]]:
-    """Return the 'hourly' dict from an Open-Meteo response in a safe form.
+    """Return the 'hourly' dict from an Open-Meteo response in a safe, canonical-keyed form.
 
     Ensures every returned key maps to a list. Scalars are converted to single-element lists.
+    Also normalizes keys to the integration's canonical names using API_TO_CANONICAL.
     Returns an empty dict for invalid input.
     """
     if not raw or not isinstance(raw, dict):
@@ -269,11 +315,12 @@ def normalize_hourly_response(raw: Optional[Dict[str, Any]]) -> Dict[str, List[A
     hourly = raw.get("hourly") or {}
     out: Dict[str, List[Any]] = {}
     for k, v in hourly.items():
+        canonical_key = API_TO_CANONICAL.get(k, k)
         if isinstance(v, list):
-            out[k] = v
+            out[canonical_key] = v
         else:
             # Convert scalars -> single-element list for consistent indexing
-            out[k] = [v]
+            out[canonical_key] = [v]
     return out
 
 
@@ -286,6 +333,7 @@ def normalize_hourly_merged(
     - Coerces numeric-like strings to numbers.
     - Converts empty/"nan"/NaN to None.
     - Normalizes times to UTC ISO strings with 'Z' suffix.
+    - Response keys are canonical internal names (e.g. 'wind_speed_10m').
     """
     weather_hourly = normalize_hourly_response(weather_raw)
     marine_hourly = normalize_hourly_response(marine_raw)
