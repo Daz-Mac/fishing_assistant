@@ -965,39 +965,65 @@ class OceanFishingScoreSensor(SensorEntity):
             raise
 
     async def _get_astro_data(self):
-        """Get astronomical data from Home Assistant."""
-        sun_state = self.hass.states.get("sun.sun")
-        moon_state = self.hass.states.get("sensor.moon")
+        """Compute astronomical data using the integration's internal calculator.
 
+        Uses our helpers/astro.calculate_astronomy_forecast (Skyfield + de421.bsp).
+        Does NOT read Home Assistant sun/moon entities.
+        Returns dict with keys:
+          - moon_phase: float or None
+          - moonrise, moonset, moon_transit, moon_underfoot: datetime or None
+          - sunrise, sunset: datetime or None
+        """
         astro: Dict[str, Any] = {}
+        try:
+            from .helpers.astro import calculate_astronomy_forecast
 
-        if sun_state:
-            sunrise_str = sun_state.attributes.get("next_rising")
-            sunset_str = sun_state.attributes.get("next_setting")
+            # Ocean sensor stores lat/lon under "latitude"/"longitude" in _attrs
+            lat = self._attrs.get("latitude") if isinstance(self._attrs, dict) else None
+            lon = self._attrs.get("longitude") if isinstance(self._attrs, dict) else None
+
+            # Fallback to scorer attributes if not present
+            if lat is None or lon is None:
+                lat = getattr(self._scorer, "latitude", None)
+                lon = getattr(self._scorer, "longitude", None)
+
+            if lat is None or lon is None:
+                # Ensure explicit keys so UI shows nulls rather than missing keys
+                for k in ("moon_phase", "moonrise", "moonset", "moon_transit", "moon_underfoot", "sunrise", "sunset"):
+                    astro.setdefault(k, None)
+                return astro
 
             try:
-                if sunrise_str:
-                    astro["sunrise"] = dt_util.parse_datetime(sunrise_str)
-                if sunset_str:
-                    astro["sunset"] = dt_util.parse_datetime(sunset_str)
+                forecast = await calculate_astronomy_forecast(self.hass, float(lat), float(lon), days=2)
             except Exception:
-                _LOGGER.debug(
-                    "Failed to parse sun times for ocean sensor: %s / %s", sunrise_str, sunset_str, exc_info=True
-                )
+                forecast = {}
 
-        if moon_state:
-            phase_name = moon_state.state
-            phase_map = {
-                "new_moon": 0.0,
-                "waxing_crescent": 0.125,
-                "first_quarter": 0.25,
-                "waxing_gibbous": 0.375,
-                "full_moon": 0.5,
-                "waning_gibbous": 0.625,
-                "last_quarter": 0.75,
-                "waning_crescent": 0.875,
-            }
-            astro["moon_phase"] = phase_map.get(phase_name, 0.5)
+            today_iso = dt_util.as_local(dt_util.now()).date().isoformat()
+            today_entry = (forecast or {}).get(today_iso) if isinstance(forecast, dict) else {}
+
+            if isinstance(today_entry, dict):
+                # moon phase
+                mp = today_entry.get("moon_phase")
+                try:
+                    if mp is not None:
+                        astro["moon_phase"] = float(mp)
+                except Exception:
+                    astro["moon_phase"] = None
+
+                # times: parse ISO strings into datetimes
+                for k in ("sunrise", "sunset", "moonrise", "moonset", "moon_transit", "moon_underfoot"):
+                    v = today_entry.get(k)
+                    if v:
+                        try:
+                            astro[k] = dt_util.parse_datetime(str(v))
+                        except Exception:
+                            astro[k] = None
+        except Exception:
+            _LOGGER.debug("Failed to compute astro data via internal calculator (ocean)", exc_info=True)
+
+        # Ensure keys exist (None if missing) for consistent attributes
+        for k in ("moon_phase", "moonrise", "moonset", "moon_transit", "moon_underfoot", "sunrise", "sunset"):
+            astro.setdefault(k, None)
 
         return astro
 
