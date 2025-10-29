@@ -39,7 +39,9 @@ class OpenMeteoAdapter:
     Adapter to expose a small, defensive interface compatible with the WeatherFetcher expectations.
     """
 
-    def __init__(self, client: OpenMeteoClient, latitude: float, longitude: float, include_marine: bool = False):
+    def __init__(
+        self, client: OpenMeteoClient, latitude: float, longitude: float, include_marine: bool = False
+    ):
         self._client = client
         self._lat = latitude
         self._lon = longitude
@@ -198,7 +200,11 @@ class OpenMeteoAdapter:
             wind_speed = None
 
         try:
-            wind_gust = float(gust_ms) * 3.6 if gust_ms is not None else (wind_speed * 1.2 if wind_speed else None)
+            wind_gust = (
+                float(gust_ms) * 3.6
+                if gust_ms is not None
+                else (wind_speed * 1.2 if wind_speed else None)
+            )
         except Exception:
             wind_gust = wind_speed * 1.2 if wind_speed else None
 
@@ -343,7 +349,9 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
 
     session = async_get_clientsession(hass)
     client = OpenMeteoClient(session=session)
-    open_meteo_adapter = OpenMeteoAdapter(client, lat, lon, include_marine=data.get(CONF_MARINE_ENABLED, True))
+    open_meteo_adapter = OpenMeteoAdapter(
+        client, lat, lon, include_marine=data.get(CONF_MARINE_ENABLED, True)
+    )
 
     location_key = f"{name.lower().replace(' ', '_')}"
 
@@ -378,6 +386,7 @@ async def _setup_ocean_sensors(hass, config_entry, async_add_entities):
 # FRESHWATER SENSOR CLASS
 # ====#
 
+
 class FishScoreSensor(SensorEntity):
     """Sensor for freshwater fishing score."""
 
@@ -411,7 +420,9 @@ class FishScoreSensor(SensorEntity):
         species_profile = species_loader.get_species(fish)
         species_profiles = {fish: species_profile} if species_profile else {}
 
-        self._scorer = FreshwaterFishingScorer(latitude=lat, longitude=lon, species=[fish], species_profiles=species_profiles)
+        self._scorer = FreshwaterFishingScorer(
+            latitude=lat, longitude=lon, species=[fish], species_profiles=species_profiles
+        )
 
         self._attrs = {
             "fish": fish,
@@ -485,7 +496,9 @@ class FishScoreSensor(SensorEntity):
             weather_data_raw = await self._weather_fetcher.get_weather_data()
             astro_data = await self._get_astro_data()
 
-            result = self._scorer.calculate_score(weather_data=weather_data_raw, astro_data=astro_data, current_time=now)
+            result = self._scorer.calculate_score(
+                weather_data=weather_data_raw, astro_data=astro_data, current_time=now
+            )
 
             if not isinstance(result, dict):
                 _LOGGER.error("Scorer returned unexpected result type for %s: %s", self._name, type(result))
@@ -539,7 +552,9 @@ class FishScoreSensor(SensorEntity):
 
             self._last_update_hour = now.hour
 
-            _LOGGER.debug("Updated %s: score=%s, component_scores=%s", self._name, self._state, self._attrs.get("component_scores"))
+            _LOGGER.debug(
+                "Updated %s: score=%s, component_scores=%s", self._name, self._state, self._attrs.get("component_scores")
+            )
 
         except Exception:
             _LOGGER.exception("Error updating freshwater sensor %s - bubbling up", self._name)
@@ -584,6 +599,7 @@ class FishScoreSensor(SensorEntity):
 # ====#
 # OCEAN MODE: Only the aggregated OceanFishingScoreSensor remains
 # ====#
+
 
 class OceanFishingScoreSensor(SensorEntity):
     """Main ocean fishing score sensor."""
@@ -677,7 +693,9 @@ class OceanFishingScoreSensor(SensorEntity):
         update_hours = [0, 6, 12, 18]
 
         if self._last_update_hour is not None and now.hour not in update_hours:
-            _LOGGER.debug("Skipping update for ocean sensor %s; not in update hours: %s", self._name, now.hour)
+            _LOGGER.debug(
+                "Skipping update for ocean sensor %s; not in update hours: %s", self._name, now.hour
+            )
             return
 
         if self._last_update_hour == now.hour:
@@ -720,7 +738,10 @@ class OceanFishingScoreSensor(SensorEntity):
 
             # If configuration uses tide proxy, require tide data presence
             if self._config_entry.data.get(CONF_TIDE_MODE) == TIDE_MODE_PROXY:
-                if not tide_data_raw or not isinstance(tide_data_raw, dict) or tide_data_raw.get("state") in (None, "unknown"):
+                if not tide_data_raw or not isinstance(tide_data_raw, dict) or tide_data_raw.get("state") in (
+                    None,
+                    "unknown",
+                ):
                     err_msg = "Missing required tide data — tide proxy mode configured but tide data unavailable."
                     _LOGGER.error(err_msg)
                     self._state = None
@@ -736,7 +757,11 @@ class OceanFishingScoreSensor(SensorEntity):
 
             # Calculate score using scorer
             result = self._scorer.calculate_score(
-                weather_data=weather_data_raw, astro_data=astro_data, tide_data=tide_data_raw, marine_data=marine_data_raw, current_time=now
+                weather_data=weather_data_raw,
+                astro_data=astro_data,
+                tide_data=tide_data_raw,
+                marine_data=marine_data_raw,
+                current_time=now,
             )
 
             if not isinstance(result, dict):
@@ -833,11 +858,11 @@ class OceanFishingScoreSensor(SensorEntity):
                     marine_forecast_raw = marine_list or []
                     tide_forecast_raw = tide_list or []
 
-                    # Attach the new non-legacy keys
-                    self._attrs["forecast_breakdown"] = forecast_breakdown
-                    self._attrs["marine_forecast_raw"] = marine_forecast_raw
-                    self._attrs["tide_forecast_raw"] = tide_forecast_raw
-                    self._attrs["score_breakdown"] = result.get("component_scores", {})
+            # Attach the new non-legacy keys (may be empty lists if no forecast)
+            self._attrs["forecast_breakdown"] = forecast_breakdown
+            self._attrs["marine_forecast_raw"] = marine_forecast_raw
+            self._attrs["tide_forecast_raw"] = tide_forecast_raw
+            self._attrs["score_breakdown"] = result.get("component_scores", {})
 
             # Use DataFormatter to produce canonical sensor attributes that include
             # formatted weather, marine, tide, astro and forecast structures.
@@ -890,7 +915,9 @@ class OceanFishingScoreSensor(SensorEntity):
 
             self._last_update_hour = now.hour
 
-            _LOGGER.debug("Updated %s: score=%s, component_scores=%s", self._name, self._state, self._attrs.get("score_breakdown"))
+            _LOGGER.debug(
+                "Updated %s: score=%s, component_scores=%s", self._name, self._state, self._attrs.get("score_breakdown")
+            )
 
         except Exception:
             _LOGGER.exception("Error updating ocean fishing score for %s - bubbling up", self._name)
@@ -913,7 +940,9 @@ class OceanFishingScoreSensor(SensorEntity):
                 if sunset_str:
                     astro["sunset"] = dt_util.parse_datetime(sunset_str)
             except Exception:
-                _LOGGER.debug("Failed to parse sun times for ocean sensor: %s / %s", sunrise_str, sunset_str, exc_info=True)
+                _LOGGER.debug(
+                    "Failed to parse sun times for ocean sensor: %s / %s", sunrise_str, sunset_str, exc_info=True
+                )
 
         if moon_state:
             phase_name = moon_state.state
